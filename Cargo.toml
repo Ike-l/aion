@@ -1,0 +1,23 @@
+[package]
+name = "aion"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# mine
+small_read_only = "0.1.0"
+small_derive_deref = "0.1.4"
+small_iter_fields = "0.1.8"
+
+# multi-threaded / async
+threadpool = "1.8.1"
+parking_lot = { version = "0.12.4", features = ["arc_lock"] }
+tokio = { version = "1.45.1", features = ["rt", "rt-multi-thread", "sync", "time"] }
+pollster = "0.4.0"
+
+# testing
+proptest = "1.7.0"
+
+# other
+anyhow = "1.0.98"
+tracing = "0.1.41"
