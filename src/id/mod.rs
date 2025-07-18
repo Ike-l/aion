@@ -1,5 +1,7 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
 
+use crate::scheduler::phase::Phase;
+
 pub mod system_id;
 pub mod event_id;
 
@@ -11,5 +13,12 @@ impl From<&str> for Id {
         let mut hasher = DefaultHasher::new();
         value.hash(&mut hasher);
         Self(hasher.finish())
+    }
+}
+
+impl From<&Phase> for Id {
+    fn from(phase: &Phase) -> Self {
+        let str = format!("{:?}", phase);
+        Self::from(str.as_str())
     }
 }

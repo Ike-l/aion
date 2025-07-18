@@ -2,7 +2,7 @@ use std::{collections::{HashMap, HashSet}, sync::{atomic::{AtomicUsize, Ordering
 
 use tracing::{event, Level};
 
-use crate::{id::{event_id::SchedulerEvent, system_id::SystemId, Id}, parameters::injections::{shared::Shared, unique::Unique}, scheduler::{accesses::access_map::AccessMap, blacklists::Blacklists, events::{CurrentEvents, NewEvents}, execution_graph::ExecutionGraph, interrupts::{CurrentInterrupts, NewInterrupts}, phase::Phase, resources::{new_resources::NewResources, resource_map::ResourceMap, system_resource::{system_resource_ptr::SystemResourcePtr, SystemResource}}}, systems::{async_system::waker::DummyWaker, stored_system::{inner_stored_system::InnerStoredSystem, StoredSystem}, system_cell::SystemCell, system_flag::SystemFlag, system_status::SystemStatus}};
+use crate::{id::{event_id::SchedulerEvent, system_id::SystemId, Id}, parameters::injections::{shared::Shared, unique::Unique}, scheduler::{accesses::{access::Access, access_map::AccessMap}, blacklists::Blacklists, events::{CurrentEvents, NewEvents}, execution_graph::{ordering::SchedulerOrdering, ExecutionGraph}, interrupts::{CurrentInterrupts, NewInterrupts}, phase::Phase, resources::{new_resources::NewResources, resource_map::ResourceMap, system_resource::{system_resource_ptr::SystemResourcePtr, SystemResource}}, tick::{current_tick::{tick_incrementor, CurrentTick}, lifetime::Lifetime, Tick}}, systems::{async_system::waker::DummyWaker, stored_system::{inner_stored_system::InnerStoredSystem, StoredSystem}, system_cell::SystemCell, system_flag::SystemFlag, system_status::SystemStatus}};
 
 pub mod accesses;
 pub mod resources;
@@ -16,6 +16,7 @@ pub mod phase;
 pub mod builder;
 
 
+#[derive(Debug)]
 pub struct Scheduler {
     // Notes: Always check if resource is being used in background_accesses
     resources: Arc<parking_lot::RwLock<ResourceMap>>,
@@ -28,11 +29,97 @@ pub struct Scheduler {
 
     background_accesses: Arc<tokio::sync::RwLock<HashMap<SystemId, AccessMap>>>,
 
-    additional_threads: usize,
     threadpool: threadpool::ThreadPool
 }
 
-impl Scheduler {
+impl Default for Scheduler {
+    fn default() -> Self {
+        let mut scheduler = Self::new_empty(8);
+
+        scheduler.insert_system(
+            "Standard Tick Accumulator".to_string(),
+            InnerStoredSystem::new_sync(tick_incrementor),
+            |events| { 
+                events.contains(&SchedulerEvent::from(Id::from(&Phase::Startup)))
+            },
+            SchedulerOrdering::default(),
+            HashSet::new()
+        );
+        
+        {
+            let mut resources = scheduler.resources.write();
+            resources.insert_auto_default::<Blacklists>();
+            resources.insert_auto_default::<CurrentTick>();
+            resources.insert_auto_default::<NewResources>();
+            resources.insert_auto_default::<NewEvents>();
+            resources.insert_auto_default::<CurrentEvents>();
+            resources.insert_auto_default::<NewInterrupts>();
+            resources.insert_auto_default::<CurrentInterrupts>();
+        }
+        {
+            let resources = scheduler.resources.read();
+            let mut blacklists = resources.resolve::<Unique<Blacklists>>().unwrap();
+
+            for blacklist in blacklists.blacklists.values_mut() {
+                blacklist.insert_typed_blacklist_auto::<NewResources>(Access::Unique, Lifetime::new_perpetual(Tick(0)));
+                blacklist.insert_typed_blacklist_auto::<CurrentEvents>(Access::Unique, Lifetime::new_perpetual(Tick(0)));
+                blacklist.insert_typed_blacklist_auto::<CurrentInterrupts>(Access::Unique, Lifetime::new_perpetual(Tick(0)));
+                blacklist.insert_typed_blacklist_auto::<Blacklists>(Access::Unique, Lifetime::new_perpetual(Tick(0)));
+            }
+
+            {
+                let background = blacklists.get_mut(&Phase::BackgroundStart).unwrap();
+                background.insert_access_blacklist(Access::Unique, Lifetime::new_perpetual(Tick(0)));
+            }
+
+            {
+                let executing = blacklists.get_mut(&Phase::Executing).unwrap();
+                executing.insert_typed_blacklist_auto::<CurrentTick>(Access::Unique, Lifetime::new_perpetual(Tick(0)));
+            }
+
+            {
+                let finishing = blacklists.get_mut(&Phase::Finishing).unwrap();
+                finishing.insert_typed_blacklist_auto::<CurrentTick>(Access::Unique, Lifetime::new_perpetual(Tick(0)));
+            }
+        }
+
+        scheduler
+    }
+}
+
+impl Scheduler {    
+    pub fn new_empty(threads: usize) -> Self {
+        assert_ne!(threads, 0, "Scheduler must have 1+ threads");
+        
+        Self {
+            resources: Arc::new(parking_lot::RwLock::new(ResourceMap::default())),
+            system_resources: Arc::new(HashMap::new()),
+            ids: Arc::new(RwLock::new(HashSet::new())),
+            systems: Some(HashMap::new()),
+            current_background_systems: Vec::new(),
+            background_accesses: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            threadpool: threadpool::ThreadPool::new(threads)
+        }
+    }
+
+    pub fn insert_system(
+        &mut self,
+        display_name: String,
+        system: InnerStoredSystem,
+        wake_up_criteria: fn(&HashSet<SchedulerEvent>) -> bool,
+        ordering: SchedulerOrdering,
+        flags: HashSet<SystemFlag>,        
+    ) -> SystemId {
+        let system_id = SystemId::from(Id::from(display_name.as_str()));
+        self.ids.write().unwrap().insert(display_name.clone());
+
+        let system = StoredSystem::new(system, wake_up_criteria, display_name, ordering, flags);
+
+        self.systems.as_mut().unwrap().insert(system_id.clone(), system);
+
+        system_id
+    }
+
     pub fn insert_new_event<T: Into<SchedulerEvent>>(&mut self, event: T) {
         self.resources.read().resolve::<Unique<NewEvents>>().unwrap().insert(event.into());
     }
@@ -49,7 +136,7 @@ impl Scheduler {
                     *resource_guard.resolve::<Unique<NewEvents>>().unwrap()
                 );
     
-                current_events.insert(SchedulerEvent::from(Id::from(format!("{phase:?}").as_str())));
+                current_events.insert(SchedulerEvent::from(Id::from(&phase)));
     
                 let mut current_interrupts = resource_guard.resolve::<Unique<CurrentInterrupts>>().unwrap();
                 current_interrupts.tick(
@@ -61,7 +148,7 @@ impl Scheduler {
                 let blacklist = resource_guard.resolve::<Shared<Blacklists>>().unwrap().get(&phase).unwrap();
                 let resource_keys = resource_guard.keys().collect();
                 let system_ptrs = self.systems.as_ref().unwrap().iter().filter_map(|(system_id, system)| {
-                    if system.flags().contains(&SystemFlag::Blocking) {
+                    if system.flags().contains(&SystemFlag::Blocking) || system.flags().is_empty() {
                         Some((system_id.clone(), system))
                     } else {
                         None
@@ -77,7 +164,7 @@ impl Scheduler {
     
                 let running_systems = to_execute.iter().map(|(system_id, _)| system_id.clone()).collect::<HashSet<_>>();
 
-                (if to_execute.len() > self.additional_threads {
+                (if to_execute.len() > self.threadpool.max_count() {
                     let independent_systems = Self::lift_independent(to_execute.into_iter())
                         .map(|systems| {
                             systems.into_iter().map(|(stored_system, system_id)| {
@@ -111,7 +198,6 @@ impl Scheduler {
                     &self.system_resources,
                     &self.ids,
                     Arc::new(execution_graphs),
-                    self.additional_threads,
                     &self.background_accesses,
                     &self.threadpool
                 );
@@ -152,7 +238,7 @@ impl Scheduler {
                 let resource_guard = self.resources.read();
                 
                 let mut current_events = resource_guard.resolve::<Unique<CurrentEvents>>().unwrap();
-                current_events.insert(SchedulerEvent::from(Id::from(format!("{:?}", Phase::BackgroundStart).as_str())));
+                current_events.insert(SchedulerEvent::from(Id::from(&Phase::BackgroundStart)));
                     
                 let mut current_interrupts = resource_guard.resolve::<Unique<CurrentInterrupts>>().unwrap();
                 current_interrupts.extend(self.current_background_systems.iter().map(|(system_id, _)| system_id.clone()));
@@ -313,7 +399,6 @@ impl Scheduler {
         system_resource_maps: &Arc<HashMap<SystemId, Arc<SystemResource>>>,
         ids: &Arc<RwLock<HashSet<String>>>,
         execution_graphs: Arc<Vec<tokio::sync::RwLock<ExecutionGraph<SystemId>>>>,
-        additional_threads: usize,
         accesses: &Arc<tokio::sync::RwLock<HashMap<SystemId, AccessMap>>>,
         threadpool: &threadpool::ThreadPool,
     ) -> (HashMap<SystemId, StoredSystem>, Vec<(SystemId, anyhow::Error)>) {
@@ -339,9 +424,9 @@ impl Scheduler {
 
         let hollow_systems = Arc::new(systems);
 
-        for i in 0..=additional_threads {
+        for i in 0..threadpool.max_count() {
             // trial-and-errored this formula in rust playground
-            let start_graph = (i * graph_count) / ( 1 + additional_threads );
+            let start_graph = (i * graph_count) / threadpool.max_count();
 
             let finished = Arc::clone(&finished);
             let execution_graphs = Arc::clone(&execution_graphs);

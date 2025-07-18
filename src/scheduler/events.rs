@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use crate::id::event_id::SchedulerEvent;
 
+#[derive(Debug, Default)]
 pub struct NewEvents {
     events: HashSet<SchedulerEvent>
 }
@@ -12,6 +13,7 @@ impl NewEvents {
     }
 }
 
+#[derive(Debug, Default)]
 pub struct CurrentEvents {
     events: HashSet<SchedulerEvent>
 }

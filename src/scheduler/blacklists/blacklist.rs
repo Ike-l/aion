@@ -38,5 +38,17 @@ impl Blacklist {
             }
         });
     }
+
+    pub fn insert_access_blacklist(&mut self, access: Access, lifetime: Lifetime) {
+        self.access_blacklist.push((access, lifetime));
+    }
+
+    pub fn insert_typed_blacklist<T: 'static>(&mut self, type_id: TypeId, access: Access, lifetime: Lifetime) {
+        self.typed_blacklist.push((type_id, access, lifetime));
+    }
+
+    pub fn insert_typed_blacklist_auto<T: 'static>(&mut self, access: Access, lifetime: Lifetime) {
+        self.typed_blacklist.push((TypeId::of::<T>(), access, lifetime));
+    }
 }
 

@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use crate::id::system_id::SystemId;
 
+#[derive(Debug, Default)]
 pub struct NewInterrupts {
     interrupts: HashSet<SystemId>
 }
@@ -12,6 +13,7 @@ impl NewInterrupts {
     }
 }
 
+#[derive(Debug, Default)]
 pub struct CurrentInterrupts {
     interrupts: HashSet<SystemId>
 }

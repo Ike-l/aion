@@ -17,9 +17,3 @@ impl Default for Blacklists {
     }
 }
 
-impl Blacklists {
-    pub fn tick(&mut self, phase: &Phase) {
-        self.blacklists.get_mut(phase).unwrap().tick();
-    }
-}
-

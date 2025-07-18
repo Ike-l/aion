@@ -2,7 +2,7 @@ use std::{any::{Any, TypeId}, collections::hash_map::Entry};
 
 use anyhow::Context;
 
-use crate::{parameters::InjectionParam, scheduler::resources::resource_wrapper::ResourceWrapper};
+use crate::{parameters::InjectionParam, scheduler::resources::{resource_wrapper::ResourceWrapper, Resource}};
 
 pub mod inner_resource_map;
 
@@ -81,5 +81,16 @@ impl ResourceMap {
         }
     }
 
+    pub fn insert<T: 'static>(&mut self, type_id: TypeId, resource: T) -> Option<Resource> {
+        let resource: Box<dyn Any> = Box::new(resource);
+        self.resources.get_map_mut(&self.in_use).0.insert(type_id, ResourceWrapper::new(resource))
+    }
 
+    pub fn insert_auto<T: 'static>(&mut self, resource: T) -> Option<Resource> {
+        self.insert(TypeId::of::<T>(), resource)
+    }
+
+    pub fn insert_auto_default<T: 'static + Default>(&mut self) -> Option<Resource> {
+        self.insert_auto(T::default())
+    }
 }
