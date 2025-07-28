@@ -5,6 +5,7 @@ use anyhow::Context;
 use crate::{parameters::InjectionParam, scheduler::resources::{resource_wrapper::ResourceWrapper, Resource}};
 
 pub mod inner_resource_map;
+pub mod access_checked_resource_map;
 
 #[derive(Debug, Default)]
 pub struct ResourceMap {

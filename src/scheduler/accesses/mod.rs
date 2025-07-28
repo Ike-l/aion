@@ -1,4 +1,4 @@
-use crate::scheduler::accesses::{access::Access, access_map::AccessMap};
+use crate::scheduler::accesses::access_map::AccessMap;
 
 pub mod access_map;
 pub mod access;
@@ -19,13 +19,7 @@ impl Accesses {
     }
 
     /// conflicts if its the accesses aren't both read 
-    pub fn conflicts(&self, other: &AccessMap) -> bool {
-        other.accesses.iter().any(|(ty, acc)| {
-            if let Some(access) = self.scheduler.accesses.get(ty) {
-                !( *acc == Access::Shared && *access == Access::Shared )
-            } else {
-                false
-            }
-        })
+    pub fn conflicts_scheduler(&self, other: &AccessMap) -> bool {
+        self.scheduler.conflicts(other)
     }
 }

@@ -13,6 +13,16 @@ impl AccessMap {
             accesses: HashMap::new()
         }
     }
+
+    pub fn conflicts(&self, other: &AccessMap) -> bool {
+        other.accesses.iter().any(|(ty, acc)| {
+            if let Some(access) = self.accesses.get(ty) {
+                !( *acc == Access::Shared && *access == Access::Shared )
+            } else {
+                false
+            }
+        })
+    }
 }
 
 impl<const N: usize> From<[(TypeId, Access); N]> for AccessMap {

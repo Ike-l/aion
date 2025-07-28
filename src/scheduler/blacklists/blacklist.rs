@@ -20,23 +20,9 @@ impl Blacklist {
     }
 
     pub fn tick(&mut self) {
-        self.access_blacklist.retain_mut(|(_, lifetime)| {
-            lifetime.age.0 += 1;
-            if let Some(expected_age) = &lifetime.expected_age {
-                return lifetime.age < *expected_age
-            } else {
-                return true
-            }
-        });
+        self.access_blacklist.retain_mut(|(_, lifetime)| lifetime.tick());
     
-        self.typed_blacklist.retain_mut(|(_, _, lifetime)| {
-            lifetime.age.0 += 1;
-            if let Some(expected_age) = &lifetime.expected_age {
-                return lifetime.age < *expected_age
-            } else {
-                return true
-            }
-        });
+        self.typed_blacklist.retain_mut(|(_, _, lifetime)| lifetime.tick());
     }
 
     pub fn insert_access_blacklist(&mut self, access: Access, lifetime: Lifetime) {

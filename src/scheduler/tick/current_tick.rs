@@ -9,7 +9,6 @@ pub struct CurrentTick {
     pub tick: Tick,
     pub dt: Duration,
     pub time: Instant,
-    pub notify: tokio::sync::Notify
 }
 
 impl Default for CurrentTick {
@@ -18,7 +17,6 @@ impl Default for CurrentTick {
             tick: Tick(0),
             dt: Duration::default(),
             time: Instant::now(),
-            notify: tokio::sync::Notify::new()
         }
     }
 }
@@ -34,8 +32,6 @@ pub fn tick_incrementor(mut current_tick: Unique<CurrentTick>) -> anyhow::Result
     current_tick.tick.0 += 1;
     current_tick.dt = dt;
     current_tick.time = current_time;
-
-    current_tick.notify.notify_waiters();
 
     Ok(())
 }

@@ -23,4 +23,15 @@ impl Lifetime {
             expected_age: None
         }
     }
+
+    /// bool: true: keep alive, false: can die
+    pub fn tick(&mut self) -> bool {
+        self.age.0 += 1;
+        if let Some(expected_age) = &self.expected_age {
+            // <= : expected_age: 1 will survive pre-emptive tick
+            return self.age <= *expected_age
+        } else {
+            return true
+        }
+    }
 }

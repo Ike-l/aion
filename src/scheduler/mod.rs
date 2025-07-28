@@ -1,8 +1,8 @@
-use std::{collections::{HashMap, HashSet}, sync::{atomic::{AtomicUsize, Ordering}, Arc, RwLock, TryLockError}, task::{Context, Poll, Waker}, thread::JoinHandle};
+use std::{any::TypeId, collections::{HashMap, HashSet}, sync::{atomic::{AtomicUsize, Ordering}, Arc, RwLock, TryLockError}, task::{Context, Poll, Waker}, thread::JoinHandle};
 
 use tracing::{event, Level};
 
-use crate::{id::{event_id::SchedulerEvent, system_id::SystemId, Id}, parameters::injections::{shared::Shared, unique::Unique}, scheduler::{accesses::{access::Access, access_map::AccessMap}, blacklists::Blacklists, events::{CurrentEvents, NewEvents}, execution_graph::{ordering::SchedulerOrdering, ExecutionGraph}, interrupts::{CurrentInterrupts, NewInterrupts}, phase::Phase, resources::{new_resources::NewResources, resource_map::ResourceMap, system_resource::{system_resource_ptr::SystemResourcePtr, SystemResource}}, tick::{current_tick::{tick_incrementor, CurrentTick}, lifetime::Lifetime, Tick}}, systems::{async_system::waker::DummyWaker, stored_system::{inner_stored_system::InnerStoredSystem, StoredSystem}, system_cell::SystemCell, system_flag::SystemFlag, system_status::SystemStatus}};
+use crate::{id::{event_id::SchedulerEvent, system_id::SystemId, Id}, parameters::injections::{owned::Owned, shared::Shared, unique::Unique}, scheduler::{accesses::{access::Access, access_map::AccessMap}, blacklists::Blacklists, events::{CurrentEvents, NewEvents}, execution_graph::{ordering::SchedulerOrdering, ExecutionGraph}, interrupts::{CurrentInterrupts, NewInterrupts}, phase::Phase, resources::{new_resources::NewResources, resource_map::{access_checked_resource_map::AccessCheckedResourceMap, ResourceMap}, system_resource::{system_resource_ptr::SystemResourcePtr, SystemResource}, Resource}, tick::{current_tick::{tick_incrementor, CurrentTick}, lifetime::Lifetime, Tick}}, systems::{async_system::waker::DummyWaker, stored_system::{inner_stored_system::InnerStoredSystem, StoredSystem}, system_cell::SystemCell, system_flag::SystemFlag, system_status::SystemStatus}};
 
 pub mod accesses;
 pub mod resources;
@@ -24,6 +24,12 @@ pub struct Scheduler {
 
     ids: Arc<RwLock<HashSet<String>>>,
     systems: Option<HashMap<SystemId, StoredSystem>>,
+
+    bubbles: Vec<(Lifetime, String, fn(&HashSet<SchedulerEvent>) -> bool)>,
+    bubble_echoes: Vec<(Lifetime, (Lifetime, String, fn(&HashSet<SchedulerEvent>) -> bool))>,
+    catfishes: Vec<(SchedulerEvent, SchedulerEvent)>,
+
+    default_systems: Vec<SystemId>,
     
     current_background_systems: Vec<(SystemId, JoinHandle<InnerStoredSystem>)>,
 
@@ -36,15 +42,17 @@ impl Default for Scheduler {
     fn default() -> Self {
         let mut scheduler = Self::new_empty(8);
 
-        scheduler.insert_system(
+        let tick_id = scheduler.insert_system(
             "Standard Tick Accumulator".to_string(),
             InnerStoredSystem::new_sync(tick_incrementor),
             |events| { 
-                events.contains(&SchedulerEvent::from(Id::from(&Phase::Startup)))
+                events.contains(&SchedulerEvent::from(Id::from(&Phase::PreProcessing)))
             },
             SchedulerOrdering::default(),
             HashSet::new()
         );
+
+        scheduler.default_systems.push(tick_id);
         
         {
             let mut resources = scheduler.resources.write();
@@ -73,12 +81,12 @@ impl Default for Scheduler {
             }
 
             {
-                let executing = blacklists.get_mut(&Phase::Executing).unwrap();
+                let executing = blacklists.get_mut(&Phase::Processing).unwrap();
                 executing.insert_typed_blacklist_auto::<CurrentTick>(Access::Unique, Lifetime::new_perpetual(Tick(0)));
             }
 
             {
-                let finishing = blacklists.get_mut(&Phase::Finishing).unwrap();
+                let finishing = blacklists.get_mut(&Phase::PostProcessing).unwrap();
                 finishing.insert_typed_blacklist_auto::<CurrentTick>(Access::Unique, Lifetime::new_perpetual(Tick(0)));
             }
         }
@@ -96,10 +104,18 @@ impl Scheduler {
             system_resources: Arc::new(HashMap::new()),
             ids: Arc::new(RwLock::new(HashSet::new())),
             systems: Some(HashMap::new()),
+            bubbles: Vec::new(),
+            bubble_echoes: Vec::new(),
+            catfishes: Vec::new(),
+            default_systems: Vec::new(),
             current_background_systems: Vec::new(),
             background_accesses: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
-            threadpool: threadpool::ThreadPool::new(threads)
+            threadpool: threadpool::Builder::new().thread_name("Scheduler's Execution Thread".to_string()).num_threads(threads).build()
         }
+    }
+
+    pub fn current_tick(&self) -> Tick {
+        self.resources.read().resolve::<Shared<CurrentTick>>().unwrap().tick
     }
 
     pub fn insert_system(
@@ -120,23 +136,100 @@ impl Scheduler {
         system_id
     }
 
+    /// Acts like a system that doesnt run
+    pub fn insert_bubble(
+        &mut self,
+        display_name: String,
+        wake_up_criteria: fn(&HashSet<SchedulerEvent>) -> bool
+    ) {
+        self.insert_bubble_column(Lifetime::new(self.current_tick(), Tick(1)), display_name, wake_up_criteria);
+    }
+
+    /// Bubble exists for the lifetime
+    pub fn insert_bubble_column(
+        &mut self, 
+        lifetime: Lifetime, 
+        display_name: String, 
+        wake_up_criteria: fn(&HashSet<SchedulerEvent>) -> bool
+    ) {
+        self.bubbles.push((lifetime, display_name, wake_up_criteria));
+    }
+
+    /// Bubble waits the lifetime 
+    pub fn insert_bubble_echo(
+        &mut self,
+        echo_lifetime: Lifetime,
+        bubble_lifetime: Lifetime,
+        display_name: String,
+        wake_up_criteria: fn(&HashSet<SchedulerEvent>) -> bool
+    ) {
+        self.bubble_echoes.push((echo_lifetime, (bubble_lifetime, display_name, wake_up_criteria)))
+    }
+
+    /// catfish an event: when the event is noticed, create another specified event
+    pub fn catfish(
+        &mut self,
+        target_event: SchedulerEvent,
+        to_insert: SchedulerEvent,
+    ) {
+        self.catfishes.push((target_event, to_insert));
+    }
+
+    pub fn resolve(&self) -> AccessCheckedResourceMap<'_> {
+        AccessCheckedResourceMap::new(&self.resources, &self.background_accesses)
+    }
+
+    pub fn resolve_owned<T, S>(&self) -> Option<Owned<T, S>> 
+        where S: ToOwned<Owned = T> + 'static,
+    {
+        self.resources.read().resolve::<Owned<T, S>>()
+    }
+
     pub fn insert_new_event<T: Into<SchedulerEvent>>(&mut self, event: T) {
         self.resources.read().resolve::<Unique<NewEvents>>().unwrap().insert(event.into());
+    }
+
+    pub fn insert<T: 'static>(&mut self, type_id: TypeId, resource: T) -> Option<Resource> {
+        self.resources.write().insert(type_id, resource)
+    }
+
+    pub fn insert_auto<T: 'static>(&mut self, resource: T) -> Option<Resource> {
+        self.insert(TypeId::of::<T>(), resource)
+    }
+
+    pub fn insert_auto_default<T: 'static + Default>(&mut self) -> Option<Resource> {
+        self.insert_auto(T::default())
     }
 
     pub fn tick(&mut self) {
         for phase in Phase::iter_fields().take(3) {
             event!(Level::INFO, phase = ?phase, "Executing Scheduler Phase: {phase:?}");
 
-            let (execution_graphs, running_systems) = {
+            let (execution_graphs, running_systems, bubbles) = {
                 let resource_guard = self.resources.read();
-                
+
+                self.bubbles.retain_mut(|(lifetime, _, _)| lifetime.tick());
+
+                for (mut lifetime, bubble) in self.bubble_echoes.drain(..).collect::<Vec<_>>() {
+                    if lifetime.tick() {
+                        self.bubble_echoes.push((lifetime, bubble));
+                    } else {
+                        self.bubbles.push(bubble);
+                    }
+                }
+
                 let mut current_events = resource_guard.resolve::<Unique<CurrentEvents>>().unwrap();
                 current_events.tick(
                     *resource_guard.resolve::<Unique<NewEvents>>().unwrap()
                 );
     
                 current_events.insert(SchedulerEvent::from(Id::from(&phase)));
+
+                for (target, insert) in self.catfishes.iter() {
+                    if current_events.events().contains(&target) {
+                        current_events.insert(insert.clone());
+                    }
+                }
     
                 let mut current_interrupts = resource_guard.resolve::<Unique<CurrentInterrupts>>().unwrap();
                 current_interrupts.tick(
@@ -148,7 +241,7 @@ impl Scheduler {
                 let blacklist = resource_guard.resolve::<Shared<Blacklists>>().unwrap().get(&phase).unwrap();
                 let resource_keys = resource_guard.keys().collect();
                 let system_ptrs = self.systems.as_ref().unwrap().iter().filter_map(|(system_id, system)| {
-                    if system.flags().contains(&SystemFlag::Blocking) || system.flags().is_empty() {
+                    if system.flags().contains(&SystemFlag::Blocking) || !(system.flags().contains(&SystemFlag::NonBlocking) || system.flags().contains(&SystemFlag::Blocking)) {
                         Some((system_id.clone(), system))
                     } else {
                         None
@@ -158,13 +251,43 @@ impl Scheduler {
                 let to_execute = system_ptrs
                     .filter(|(s, _)| !current_interrupts.contains(s))
                     .filter(|(_, s)| s.wake_up(current_events.events()))
-                    .filter(|(_, s)| s.test_criteria(&resource_keys))
-                    .filter(|(_, s)| !blacklist.check_blocked(s.cached_accesses().scheduler()))
+                    .filter(|(_, s)| {
+                        if s.test_criteria(&resource_keys) {
+                            true
+                        } else {
+                            if s.flags().contains(&SystemFlag::HasRequirements) {
+                                panic!("System requirements have not been met for: {}", s.display_name())
+                            } else {
+                                false
+                            }
+                        }
+                    })
+                    .filter(|(_, s)| {
+                        if !blacklist.check_blocked(s.cached_accesses().scheduler()) {
+                            true
+                        } else {
+                            if s.flags().contains(&SystemFlag::NotBlacklisted) {
+                                panic!("System: {}, has been blocked by a blacklist", s.display_name())
+                            } else {
+                                false
+                            }
+                        }
+                    })
                     .collect::<Vec<_>>();
     
                 let running_systems = to_execute.iter().map(|(system_id, _)| system_id.clone()).collect::<HashSet<_>>();
 
-                (if to_execute.len() > self.threadpool.max_count() {
+                let bubbles = self.bubbles.iter().filter_map(|(_, bubble_name, crit)| {
+                    if crit(current_events.events()) {
+                        Some(SchedulerEvent::from(Id::from(bubble_name.as_str())))
+                    } else {
+                        None
+                    }
+                }).collect::<Vec<_>>();
+
+                (if to_execute.is_empty() {
+                    vec![]
+                } else if to_execute.len() > self.threadpool.max_count() {
                     let independent_systems = Self::lift_independent(to_execute.into_iter())
                         .map(|systems| {
                             systems.into_iter().map(|(stored_system, system_id)| {
@@ -184,13 +307,18 @@ impl Scheduler {
                     vec![
                         tokio::sync::RwLock::new(ExecutionGraph::new(&systems))
                     ]
-                }, running_systems)
+                }, running_systems, bubbles)
             };
 
             if !execution_graphs.is_empty() {
                 for system in running_systems {
                     self.insert_new_event::<Id>(system.into())
                 }
+
+                for bubble in bubbles {
+                    self.insert_new_event(bubble);
+                }
+                // for system in bubbles that are triggered create new event
 
                 let (systems, errors) = Self::execute_graphs(
                     self.systems.take().unwrap(),
@@ -246,7 +374,7 @@ impl Scheduler {
                 let blacklist = resource_guard.resolve::<Shared<Blacklists>>().unwrap().get(&Phase::BackgroundStart).unwrap();
                 let resource_keys = resource_guard.keys().collect();
                 let system_ptrs = self.systems.as_ref().unwrap().iter().filter_map(|(system_id, system)| {
-                    if system.flags().contains(&SystemFlag::Blocking) {
+                    if system.flags().contains(&SystemFlag::NonBlocking) {
                         Some((system_id.clone(), system))
                     } else {
                         None
@@ -256,9 +384,28 @@ impl Scheduler {
                 system_ptrs
                     .filter(|(s, _)| !current_interrupts.contains(s))
                     .filter(|(_, s)| s.wake_up(current_events.events()))
-                    .filter(|(_, s)| s.test_criteria(&resource_keys))
-                    .filter(|(_, s)| !blacklist.check_blocked(s.cached_accesses().scheduler()))
-                    .map(|(system_id, _)| system_id)
+                    .filter(|(_, s)| {
+                        if s.test_criteria(&resource_keys) {
+                            true
+                        } else {
+                            if s.flags().contains(&SystemFlag::HasRequirements) {
+                                panic!("System requirements have not been met for {}", s.display_name())
+                            } else {
+                                false
+                            }
+                        }
+                    })
+                    .filter(|(_, s)| {
+                        if !blacklist.check_blocked(s.cached_accesses().scheduler()) {
+                            true
+                        } else {
+                            if s.flags().contains(&SystemFlag::NotBlacklisted) {
+                                panic!("System: {}, has been blocked by a blacklist", s.display_name())
+                            } else {
+                                false
+                            }
+                        }
+                    }).map(|(system_id, _)| system_id)
                     .collect::<HashSet<_>>()
             };
 
@@ -280,7 +427,7 @@ impl Scheduler {
                                 {
                                     let mut accesses_guard = self.background_accesses.blocking_write();
                                     if accesses_guard.values().any(|access| {
-                                        system.cached_accesses().conflicts(access)
+                                        system.cached_accesses().conflicts_scheduler(access)
                                     }) {
                                         continue 'systems_walk;
                                     }
@@ -482,7 +629,7 @@ impl Scheduler {
                                                         {
                                                             let mut accesses_guard = accesses.write().await;
                                                             if accesses_guard.values().any(|access| {
-                                                                system.cached_accesses().conflicts(access)
+                                                                system.cached_accesses().conflicts_scheduler(access)
                                                             }) {
                                                                 chain += 1;
                                                                 continue 'graphs_walk;
@@ -565,8 +712,8 @@ impl Scheduler {
                                                     SystemStatus::Executing => { unreachable!("Somehow got a lock while another thread should be holding it") }
                                                 }
                                             }
-                                            Err(err) => {
-                                                assert!(matches!(err, TryLockError::WouldBlock), "How poison?");
+                                            Err(_err) => {
+                                                //assert!(matches!(err, TryLockError::WouldBlock), "How poison?");
 
                                                 chain += 1;
                                                 continue 'graphs_walk;
