@@ -29,6 +29,8 @@ pub trait InjectionParam {
         }
     }
 
+    /// Safety:
+    /// Ensure resource map safety
     unsafe fn try_retrieve<'a>(resource_map: &'a ResourceMap) -> Option<Self::Item<'a>>;
     
     fn select_target() -> Target {
@@ -39,7 +41,9 @@ pub trait InjectionParam {
     /// <br>Hence, for example `Local` will not work because `Local` calls try_retrieve of the `InjectionParam`
     /// <br>SystemResourceMap is Some when Accesses has SystemAccesses
     /// <br>SystemResourceMaps is None when calling for a background thread (so `tick` iterations aren't blocked by a background thread that may never exit)
-    fn retrieve<'a>(
+    /// Safety:
+    /// Ensure no concurrent mutable accesses via `fn accesses`
+    unsafe fn retrieve<'a>(
         scheduler_resource_map: &'a ResourceMap,
         system_resource_map: Option<&'a SystemResourcePtr>, 
         // Do i want to pass these to try_retrieve?
@@ -55,6 +59,8 @@ pub trait InjectionParam {
             Target::System => system_resource_map.ok_or_else(|| anyhow::anyhow!("Missing system_resource_map when Target::System"))?,
         };
 
+        // Safety:
+        // Same requirements as the caller 
         unsafe { Self::try_retrieve(map).ok_or_else(|| anyhow::anyhow!(Self::failed_message())) }
     }
 
@@ -88,11 +94,11 @@ pub trait InjectionParam {
         format!("conflicting access in system; from {type_name}")
     }
 
-    fn try_typed_retrieve<T: 'static>(resources: &ResourceMap) -> Option<&T> {
-        resources.get::<T>()
+    unsafe fn try_typed_retrieve<T: 'static>(resources: &ResourceMap) -> Option<&T> {
+        unsafe { resources.get::<T>() }
     }
 
-    fn try_typed_mut_retrieve<T: 'static>(resources: &ResourceMap) -> Option<&mut T> {
-        resources.get_mut::<T>()
+    unsafe fn try_typed_mut_retrieve<T: 'static>(resources: &ResourceMap) -> Option<&mut T> {
+        unsafe { resources.get_mut::<T>() }
     }
 }

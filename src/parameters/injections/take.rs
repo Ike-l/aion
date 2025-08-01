@@ -25,7 +25,9 @@ impl<T: 'static + Default> InjectionParam for Take<T> {
     }
 
     unsafe fn try_retrieve<'a>(resource_map: &'a ResourceMap) -> Option<Self::Item<'a>> {
-        let reference: T = std::mem::take(Self::try_typed_mut_retrieve::<T>(resource_map)?);
+        // Safety:
+        // Assumes safety of the calling function
+        let reference: T = std::mem::take(unsafe { Self::try_typed_mut_retrieve::<T>(resource_map)? });
         Some(Take::new(reference))
     }
 }

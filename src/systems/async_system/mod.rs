@@ -7,7 +7,9 @@ pub mod waker;
 
 pub trait AsyncSystem: Send + Sync {
     // can ?trivially make the return future `+ Send`
-    fn run<'a>(
+    /// Safety:
+    /// Ensure no concurrent mutable accesses via `fn accesses`
+    unsafe fn run<'a>(
         &'a mut self,
         scheduler_resource_map: &'a ResourceMap,
         running_system_resource_map: Option<&'a SystemResourcePtr>,
@@ -37,7 +39,7 @@ macro_rules! impl_async_system {
                 FnMut($($params),*) -> Fut +
                 FnMut($(<$params as InjectionParam>::Item<'b>),*) -> Fut,
         {
-            fn run<'a>(
+            unsafe fn run<'a>(
                 &'a mut self,
                 scheduler_resource_map: &'a ResourceMap,
                 system_resource_map: Option<&'a SystemResourcePtr>,
@@ -47,13 +49,13 @@ macro_rules! impl_async_system {
             ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + 'a>> {
                 Box::pin(async move {
                     $(
-                        let $params = $params::retrieve(
+                        let $params = unsafe { $params::retrieve(
                             scheduler_resource_map, 
                             system_resource_map,
                             system_id.clone(), 
                             id_map.read().unwrap(),
                             system_resource_maps, 
-                        )?;
+                        )? };
                     )*
 
                     drop(id_map);
@@ -135,15 +137,17 @@ mod async_system_tests {
         
         assert!(scheduler_resource_map.conservatively_insert_auto_default::<Arc<tokio::sync::Mutex<usize>>>().is_ok());
         
-        pollster::block_on(runnable.run(
+        pollster::block_on(unsafe { runnable.run(
             &scheduler_resource_map, 
             None, 
             SystemId::from(Id::from("foo")), 
             Arc::new(RwLock::new(HashSet::default())), 
             None
-        )).unwrap();
+        ) }).unwrap();
 
-        let channel = scheduler_resource_map.resolve::<Shared<Arc<tokio::sync::Mutex<usize>>>>().unwrap();
+        // Safety:
+        // No other accesses
+        let channel = unsafe { scheduler_resource_map.resolve::<Shared<Arc<tokio::sync::Mutex<usize>>>>().unwrap() };
         assert_eq!(*channel.blocking_lock(), 1)
     }
 
@@ -164,13 +168,13 @@ mod async_system_tests {
 
         // done like this to mimic how it would be done in the scheduler
         rt.block_on(async move {
-            let mut fut = runnable.run(
+            let mut fut = unsafe { runnable.run(
                 &scheduler_resource_map, 
                 None, 
                 SystemId::from(Id::from("foo")), 
                 Arc::new(RwLock::new(HashSet::default())), 
                 None
-            );
+            ) };
     
             assert!(matches!(fut.as_mut().poll(&mut cx), Poll::Pending));
             tokio::time::sleep(Duration::from_secs_f32(DURATION)).await;

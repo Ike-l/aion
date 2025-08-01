@@ -44,7 +44,9 @@ where
     }
 
     unsafe fn try_retrieve<'a>(resource_map: &'a ResourceMap) -> Option<Self::Item<'a>> {
-        let reference: &Y = Self::try_typed_retrieve::<Y>(resource_map)?;
+        // Safety:
+        // Assumes safety of the calling function
+        let reference: &Y = unsafe { Self::try_typed_retrieve::<Y>(resource_map)? };
         Some(Owned::new(reference))
     }
 }

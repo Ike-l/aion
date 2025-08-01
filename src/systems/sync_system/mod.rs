@@ -5,7 +5,9 @@ use crate::{id::system_id::SystemId, parameters::{InjectionParam, Target}, sched
 pub mod into_sync;
 
 pub trait SyncSystem: Send + Sync {
-    fn run(
+    /// Safety:
+    /// Ensure no concurrent mutable accesses via `fn accesses`
+    unsafe fn run(
         &mut self,
         scheduler_resource_map: &ResourceMap,
         running_system_resource_map: Option<&SystemResourcePtr>,
@@ -34,7 +36,7 @@ macro_rules! impl_sync_system {
                     FnMut($($params),*) -> anyhow::Result<()> +
                     FnMut($(<$params as InjectionParam>::Item<'b>),*) -> anyhow::Result<()> 
         {
-            fn run(
+            unsafe fn run(
                 &mut self,
                 scheduler_resource_map: &ResourceMap,
                 system_resource_map: Option<&SystemResourcePtr>,
@@ -50,13 +52,13 @@ macro_rules! impl_sync_system {
                 }
 
                 $(
-                    let $params = $params::retrieve(
+                    let $params = unsafe { $params::retrieve(
                         scheduler_resource_map,
                         system_resource_map,
                         system_id.clone(), 
                         id_map.read().unwrap(),
                         system_resource_maps, 
-                    )?;
+                    )? };
                 )*
 
                 drop(id_map);
@@ -131,15 +133,17 @@ mod sync_system_tests {
         
         assert!(scheduler_resource_map.conservatively_insert_auto_default::<usize>().is_ok());
         
-        runnable.run(
+        unsafe { runnable.run(
             &scheduler_resource_map, 
             None, 
             SystemId::from(Id::from("foo")), 
             Arc::new(RwLock::new(HashSet::default())), 
             None
-        ).unwrap();
+        ).unwrap() };
 
-        let channel = scheduler_resource_map.resolve::<Shared<usize>>().unwrap();
+        // Safety:
+        // No other accesses
+        let channel = unsafe { scheduler_resource_map.resolve::<Shared<usize>>().unwrap() };
         assert_eq!(**channel, 1)
     }
 

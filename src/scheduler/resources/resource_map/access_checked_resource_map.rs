@@ -23,7 +23,9 @@ impl<'a> AccessCheckedResourceMap<'a> {
         if !self.accesses.blocking_read().iter().any(|(_, access_map)| {
             accesses.conflicts(access_map)
         }) {
-            return Ok(self.resource_map.resolve::<T>());
+            // Safety:
+            // Accesses are checked
+            return Ok(unsafe {self.resource_map.resolve::<T>() });
         }
 
         Err("Access Denied")

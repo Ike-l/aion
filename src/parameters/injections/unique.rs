@@ -25,6 +25,8 @@ impl<T: 'static> InjectionParam for Unique<'_, T> {
     }
     
     unsafe fn try_retrieve<'a>(resource_map: &'a ResourceMap) -> Option<Self::Item<'a>> {
-        Some( Unique::new( Self::try_typed_mut_retrieve::<T>( resource_map )? ) )
+        // Safety:
+        // Assumes safety of the calling function
+        Some( Unique::new( unsafe { Self::try_typed_mut_retrieve::<T>( resource_map )? } ) )
     }
 }

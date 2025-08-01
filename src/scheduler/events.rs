@@ -4,36 +4,41 @@ use crate::id::event_id::SchedulerEvent;
 
 #[derive(Debug, Default)]
 pub struct NewEvents {
-    events: HashSet<SchedulerEvent>
+    events: HashSet<SchedulerEvent>,
+    in_use: parking_lot::Mutex<()>,
 }
 
 impl NewEvents {
     pub fn insert(&mut self, event: SchedulerEvent) -> bool {
+        let _guard = self.in_use.lock();
         self.events.insert(event)
     }
 }
 
 #[derive(Debug, Default)]
 pub struct CurrentEvents {
-    events: HashSet<SchedulerEvent>
+    events: parking_lot::RwLock<HashSet<SchedulerEvent>>
 }
 
 impl CurrentEvents {
     pub fn tick(&mut self, new_events: &mut NewEvents) -> &mut Self {
-        self.events.clear();
+        let mut events = self.events.write();
+        events.clear();
 
         for event in new_events.events.drain() {
-            self.events.insert(event);
+            events.insert(event);
         }
+
+        drop(events);
 
         self
     }
 
     pub fn insert(&mut self, event: SchedulerEvent) {
-        self.events.insert(event);
+        self.events.write().insert(event);
     }
 
-    pub fn events(&self) -> &HashSet<SchedulerEvent> {
-        &self.events
+    pub fn events(&self) -> parking_lot::RwLockReadGuard<HashSet<SchedulerEvent>> {
+        self.events.read()
     }
 }

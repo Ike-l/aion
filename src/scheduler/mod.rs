@@ -38,6 +38,7 @@ pub struct Scheduler {
     threadpool: threadpool::ThreadPool
 }
 
+// Default needed to uphold safety
 impl Default for Scheduler {
     fn default() -> Self {
         let mut scheduler = Self::new_empty(8);
@@ -56,17 +57,17 @@ impl Default for Scheduler {
         
         {
             let mut resources = scheduler.resources.write();
-            resources.insert_auto_default::<Blacklists>();
-            resources.insert_auto_default::<CurrentTick>();
-            resources.insert_auto_default::<NewResources>();
-            resources.insert_auto_default::<NewEvents>();
-            resources.insert_auto_default::<CurrentEvents>();
-            resources.insert_auto_default::<NewInterrupts>();
-            resources.insert_auto_default::<CurrentInterrupts>();
+            unsafe { resources.insert_auto_default::<Blacklists>() };
+            unsafe { resources.insert_auto_default::<CurrentTick>() };
+            unsafe { resources.insert_auto_default::<NewResources>() };
+            unsafe { resources.insert_auto_default::<NewEvents>() };
+            unsafe { resources.insert_auto_default::<CurrentEvents>() };
+            unsafe { resources.insert_auto_default::<NewInterrupts>() };
+            unsafe { resources.insert_auto_default::<CurrentInterrupts>() };
         }
         {
             let resources = scheduler.resources.read();
-            let mut blacklists = resources.resolve::<Unique<Blacklists>>().unwrap();
+            let mut blacklists = unsafe { resources.resolve::<Unique<Blacklists>>().unwrap() };
 
             for blacklist in blacklists.blacklists.values_mut() {
                 blacklist.insert_typed_blacklist_auto::<NewResources>(Access::Unique, Lifetime::new_perpetual(Tick(0)));
@@ -78,6 +79,7 @@ impl Default for Scheduler {
             {
                 let background = blacklists.get_mut(&Phase::BackgroundStart).unwrap();
                 background.insert_access_blacklist(Access::Unique, Lifetime::new_perpetual(Tick(0)));
+                background.insert_typed_blacklist_auto::<Blacklists>(Access::Shared, Lifetime::new_perpetual(Tick(0)));
             }
 
             {
@@ -96,7 +98,7 @@ impl Default for Scheduler {
 }
 
 impl Scheduler {    
-    pub fn new_empty(threads: usize) -> Self {
+    fn new_empty(threads: usize) -> Self {
         assert_ne!(threads, 0, "Scheduler must have 1+ threads");
         
         Self {
@@ -115,7 +117,9 @@ impl Scheduler {
     }
 
     pub fn current_tick(&self) -> Tick {
-        self.resources.read().resolve::<Shared<CurrentTick>>().unwrap().tick
+        // Safety:
+        // Is `copy` so doesnt `access` per se
+        unsafe { self.resources.read().resolve::<Shared<CurrentTick>>().unwrap().tick }
     }
 
     pub fn insert_system(
@@ -182,23 +186,33 @@ impl Scheduler {
     pub fn resolve_owned<T, S>(&self) -> Option<Owned<T, S>> 
         where S: ToOwned<Owned = T> + 'static,
     {
-        self.resources.read().resolve::<Owned<T, S>>()
+        // Safety:
+        // doesnt return a reference
+        unsafe { self.resources.read().resolve::<Owned<T, S>>() }
     }
 
     pub fn insert_new_event<T: Into<SchedulerEvent>>(&mut self, event: T) {
-        self.resources.read().resolve::<Unique<NewEvents>>().unwrap().insert(event.into());
+        // Safety:
+        // Uses locks internally so multiple access is fine
+        unsafe { self.resources.read().resolve::<Unique<NewEvents>>().unwrap().insert(event.into()) };
     }
 
-    pub fn insert<T: 'static>(&mut self, type_id: TypeId, resource: T) -> Option<Resource> {
-        self.resources.write().insert(type_id, resource)
+    /// Safety:
+    /// Ensure no reference alive when insert
+    pub unsafe fn insert<T: 'static>(&mut self, type_id: TypeId, resource: T) -> Option<Resource> {
+        unsafe { self.resources.write().insert(type_id, resource) }
     }
 
-    pub fn insert_auto<T: 'static>(&mut self, resource: T) -> Option<Resource> {
-        self.insert(TypeId::of::<T>(), resource)
+    /// Safety:
+    /// Ensure no reference alive when insert
+    pub unsafe fn insert_auto<T: 'static>(&mut self, resource: T) -> Option<Resource> {
+        unsafe { self.insert(TypeId::of::<T>(), resource) }
     }
 
-    pub fn insert_auto_default<T: 'static + Default>(&mut self) -> Option<Resource> {
-        self.insert_auto(T::default())
+    /// Safety:
+    /// Ensure no reference alive when insert
+    pub unsafe fn insert_auto_default<T: 'static + Default>(&mut self) -> Option<Resource> {
+        unsafe { self.insert_auto(T::default()) }
     }
 
     pub fn tick(&mut self) {
@@ -218,9 +232,13 @@ impl Scheduler {
                     }
                 }
 
-                let mut current_events = resource_guard.resolve::<Unique<CurrentEvents>>().unwrap();
+                // Safety:
+                // Uses locks internally
+                let mut current_events = unsafe { resource_guard.resolve::<Unique<CurrentEvents>>().unwrap() };
                 current_events.tick(
-                    *resource_guard.resolve::<Unique<NewEvents>>().unwrap()
+                    // Safety:
+                    // Uses locks internally
+                    *unsafe { resource_guard.resolve::<Unique<NewEvents>>().unwrap() }
                 );
     
                 current_events.insert(SchedulerEvent::from(Id::from(&phase)));
@@ -231,14 +249,20 @@ impl Scheduler {
                     }
                 }
     
-                let mut current_interrupts = resource_guard.resolve::<Unique<CurrentInterrupts>>().unwrap();
+                // Safety:
+                // Uses locks internally
+                let mut current_interrupts = unsafe { resource_guard.resolve::<Unique<CurrentInterrupts>>().unwrap() };
                 current_interrupts.tick(
-                    *resource_guard.resolve::<Unique<NewInterrupts>>().unwrap()
+                    // Safety:
+                    // Uses locks internally
+                    *unsafe { resource_guard.resolve::<Unique<NewInterrupts>>().unwrap() }
                 );
     
                 current_interrupts.extend(self.current_background_systems.iter().map(|(system_id, _)| system_id.clone()));
     
-                let blacklist = resource_guard.resolve::<Shared<Blacklists>>().unwrap().get(&phase).unwrap();
+                // Safety:
+                // Background threads only have read access and no other systems are runnign
+                let blacklist = unsafe { resource_guard.resolve::<Shared<Blacklists>>().unwrap().get(&phase).unwrap() };
                 let resource_keys = resource_guard.keys().collect();
                 let system_ptrs = self.systems.as_ref().unwrap().iter().filter_map(|(system_id, system)| {
                     if system.flags().contains(&SystemFlag::Blocking) || !(system.flags().contains(&SystemFlag::NonBlocking) || system.flags().contains(&SystemFlag::Blocking)) {
@@ -250,7 +274,7 @@ impl Scheduler {
     
                 let to_execute = system_ptrs
                     .filter(|(s, _)| !current_interrupts.contains(s))
-                    .filter(|(_, s)| s.wake_up(current_events.events()))
+                    .filter(|(_, s)| s.wake_up(&current_events.events()))
                     .filter(|(_, s)| {
                         if s.test_criteria(&resource_keys) {
                             true
@@ -278,7 +302,7 @@ impl Scheduler {
                 let running_systems = to_execute.iter().map(|(system_id, _)| system_id.clone()).collect::<HashSet<_>>();
 
                 let bubbles = self.bubbles.iter().filter_map(|(_, bubble_name, crit)| {
-                    if crit(current_events.events()) {
+                    if crit(&current_events.events()) {
                         Some(SchedulerEvent::from(Id::from(bubble_name.as_str())))
                     } else {
                         None
@@ -338,7 +362,9 @@ impl Scheduler {
             }
 
             let resource_guard = self.resources.read();
-            resource_guard.resolve::<Unique<Blacklists>>().unwrap().get_mut(&phase).unwrap().tick();
+            // Safety:
+            // Blacklists blacklisted from background processes
+            unsafe { resource_guard.resolve::<Unique<Blacklists>>().unwrap().get_mut(&phase).unwrap().tick() }; 
         }
 
         event!(Level::INFO, phase = ?Phase::BackgroundEnd, "Executing Scheduler Phase: {:?}", Phase::BackgroundEnd);
@@ -365,13 +391,19 @@ impl Scheduler {
             let to_execute = {
                 let resource_guard = self.resources.read();
                 
-                let mut current_events = resource_guard.resolve::<Unique<CurrentEvents>>().unwrap();
+                // Safety:
+                // Uses locks internally
+                let mut current_events = unsafe { resource_guard.resolve::<Unique<CurrentEvents>>().unwrap() };
                 current_events.insert(SchedulerEvent::from(Id::from(&Phase::BackgroundStart)));
                     
-                let mut current_interrupts = resource_guard.resolve::<Unique<CurrentInterrupts>>().unwrap();
+                // Safety:
+                // Uses locks internally
+                let mut current_interrupts = unsafe { resource_guard.resolve::<Unique<CurrentInterrupts>>().unwrap() };
                 current_interrupts.extend(self.current_background_systems.iter().map(|(system_id, _)| system_id.clone()));
                         
-                let blacklist = resource_guard.resolve::<Shared<Blacklists>>().unwrap().get(&Phase::BackgroundStart).unwrap();
+                // Safety:
+                // Blacklists blacklisted from background processes
+                let blacklist = unsafe { resource_guard.resolve::<Shared<Blacklists>>().unwrap().get(&Phase::BackgroundStart).unwrap() };
                 let resource_keys = resource_guard.keys().collect();
                 let system_ptrs = self.systems.as_ref().unwrap().iter().filter_map(|(system_id, system)| {
                     if system.flags().contains(&SystemFlag::NonBlocking) {
@@ -383,7 +415,7 @@ impl Scheduler {
         
                 system_ptrs
                     .filter(|(s, _)| !current_interrupts.contains(s))
-                    .filter(|(_, s)| s.wake_up(current_events.events()))
+                    .filter(|(_, s)| s.wake_up(&current_events.events()))
                     .filter(|(_, s)| {
                         if s.test_criteria(&resource_keys) {
                             true
@@ -455,13 +487,13 @@ impl Scheduler {
                                                 let system_resource_map = SystemResourcePtr::new(Arc::clone(system_resource_maps.get(&system_id).unwrap())).unwrap();
                                                 drop(system_resource_maps);
                                                 if let InnerStoredSystem::Sync(sys) = &mut inner {
-                                                    sys.run(
+                                                    unsafe { sys.run(
                                                         &scheduler_resource_map, 
                                                         Some(&system_resource_map),
                                                         system_id, 
                                                         ids, 
                                                         None
-                                                    ).unwrap();
+                                                    ).unwrap() };
                                                 }
                                                 inner
                                             }),
@@ -490,7 +522,9 @@ impl Scheduler {
         {
             event!(Level::INFO, phase = ?Phase::Movement, "Executing Scheduler Phase: {:?}", Phase::Movement);
             let resources = self.resources.read();
-            let new_resources = resources.resolve::<Unique<NewResources>>().unwrap().write().drain().collect::<HashMap<_, _>>();
+            // Safety:
+            // Uses locks internally
+            let new_resources = unsafe { resources.resolve::<Unique<NewResources>>().unwrap().write().drain().collect::<HashMap<_, _>>() };
             for (system_id, resource_map) in new_resources {
                 if let Some(system_id) = system_id {
                     let _ = self.system_resources.get(&system_id).unwrap().conservatively_merge(resource_map);
@@ -657,13 +691,13 @@ impl Scheduler {
 
                                                         match inner {
                                                             InnerStoredSystem::Sync(system) => {
-                                                                if let Err(err) = system.run(
+                                                                if let Err(err) = unsafe { system.run(
                                                                     &scheduler_resource_map, 
                                                                     system_resource_map_ptrs.get(&system_id), 
                                                                     system_id.clone(), 
                                                                     Arc::clone(&ids), 
                                                                     Some(&system_resource_maps)
-                                                                ) {
+                                                                ) } {
                                                                     errors.lock().await.push((system_id.clone(), err));
                                                                 }
 
@@ -672,13 +706,13 @@ impl Scheduler {
                                                                 accesses.write().await.remove(&system_id);
                                                             },
                                                             InnerStoredSystem::Async(system) => {
-                                                                let mut task = system.run(
+                                                                let mut task = unsafe { system.run(
                                                                     &scheduler_resource_map, 
                                                                     system_resource_map_ptrs.get(&system_id), 
                                                                     system_id.clone(), 
                                                                     Arc::clone(&ids), 
                                                                     Some(&system_resource_maps)
-                                                                );
+                                                                ) };
 
                                                                 match task.as_mut().poll(&mut context) {
                                                                     Poll::Pending => {

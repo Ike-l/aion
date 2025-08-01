@@ -27,6 +27,8 @@ impl<T: 'static> InjectionParam for ArcMutex<T> {
     }
 
     unsafe fn try_retrieve<'a>(resource_map: &'a ResourceMap) -> Option<Self::Item<'a>> {
-        Some(ArcMutex::new(resource_map.get::<Arc<tokio::sync::Mutex<T>>>()?))
+        // Safety:
+        // Assumes safety of the calling function
+        Some(ArcMutex::new(unsafe { resource_map.get::<Arc<tokio::sync::Mutex<T>>>()? }))
     }
 }

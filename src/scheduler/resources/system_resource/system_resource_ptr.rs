@@ -2,6 +2,8 @@ use std::{ops::Deref, sync::{atomic::Ordering, Arc}};
 
 use crate::scheduler::resources::{resource_map::ResourceMap, system_resource::SystemResource};
 
+/// Ensure the instance is NOT dropped before any resources are dropped
+/// (prevents aliasing issues)
 pub struct SystemResourcePtr {
     system_resources: Arc<SystemResource>
 }

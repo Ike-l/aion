@@ -58,11 +58,15 @@ impl ResourceMap {
         }
     }
 
-    pub fn resolve<T: InjectionParam>(&self) -> Option<T::Item<'_>> {
+    /// Safety:
+    /// Ensure `get` or `get_mut` safety
+    pub unsafe fn resolve<T: InjectionParam>(&self) -> Option<T::Item<'_>> {
         unsafe { T::try_retrieve(&self) }
     }
 
-    pub fn get<T: 'static>(&self) -> Option<&T> {
+    /// Safety:
+    /// Ensure No Concurrent Mutable Access
+    pub unsafe fn get<T: 'static>(&self) -> Option<&T> {
         let (map, _reading) = self.resources.get_map(&self.in_use);
         unsafe {
             map
@@ -72,7 +76,9 @@ impl ResourceMap {
         }
     }
 
-    pub fn get_mut<T: 'static>(&self) -> Option<&mut T> {
+    /// Safety:
+    /// Ensure No Concurrent Access
+    pub unsafe fn get_mut<T: 'static>(&self) -> Option<&mut T> {
         let (map, _reading) = self.resources.get_map(&self.in_use);
         unsafe {
             map
@@ -82,16 +88,25 @@ impl ResourceMap {
         }
     }
 
-    pub fn insert<T: 'static>(&mut self, type_id: TypeId, resource: T) -> Option<Resource> {
+    /// Safety:
+    /// Ensure no reference alive when insert
+    /// Use conservatively_insert for safety
+    pub unsafe fn insert<T: 'static>(&mut self, type_id: TypeId, resource: T) -> Option<Resource> {
         let resource: Box<dyn Any> = Box::new(resource);
         self.resources.get_map_mut(&self.in_use).0.insert(type_id, ResourceWrapper::new(resource))
     }
 
-    pub fn insert_auto<T: 'static>(&mut self, resource: T) -> Option<Resource> {
-        self.insert(TypeId::of::<T>(), resource)
+    /// Safety:
+    /// Ensure no reference alive when insert
+    /// Use conservatively_insert for safety
+    pub unsafe fn insert_auto<T: 'static>(&mut self, resource: T) -> Option<Resource> {
+        unsafe { self.insert(TypeId::of::<T>(), resource) }
     }
 
-    pub fn insert_auto_default<T: 'static + Default>(&mut self) -> Option<Resource> {
-        self.insert_auto(T::default())
+    /// Safety:
+    /// Ensure no reference alive when insert
+    /// Use conservatively_insert for safety
+    pub unsafe fn insert_auto_default<T: 'static + Default>(&mut self) -> Option<Resource> {
+        unsafe { self.insert_auto(T::default()) }
     }
 }

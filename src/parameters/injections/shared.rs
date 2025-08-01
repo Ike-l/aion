@@ -28,6 +28,8 @@ impl<T: 'static> InjectionParam for Shared<'_, T> {
     }
         
     unsafe fn try_retrieve<'a>(resource_map: &'a ResourceMap) -> Option<Self::Item<'a>> {
-        Some( Shared::new( Self::try_typed_retrieve::<T>( resource_map )? ) )
+        // Safety:
+        // Assumes safety of the calling function
+        Some( Shared::new( unsafe { Self::try_typed_retrieve::<T>( resource_map )? } ) )
     }
 }
