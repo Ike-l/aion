@@ -9,6 +9,14 @@ pub struct Blacklists {
     pub blacklists: HashMap<Phase, Blacklist>
 }
 
+impl Blacklists {
+    pub fn tick(&mut self) {
+        for (_, blacklist) in self.blacklists.iter_mut() {
+            blacklist.tick();
+        }
+    }
+}
+
 impl Default for Blacklists {
     fn default() -> Self {
         Self {

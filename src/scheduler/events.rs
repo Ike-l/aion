@@ -38,6 +38,10 @@ impl CurrentEvents {
         self.events.write().insert(event);
     }
 
+    pub fn remove(&mut self, to_remove: &SchedulerEvent) {
+        self.events.write().retain(|event| event != to_remove);
+    }
+
     pub fn events(&self) -> parking_lot::RwLockReadGuard<HashSet<SchedulerEvent>> {
         self.events.read()
     }

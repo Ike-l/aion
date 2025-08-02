@@ -1,5 +1,7 @@
 use crate::scheduler::Scheduler;
 
 pub trait Plugin {
-    fn plugin(&self, scheduler: &mut Scheduler);
+    /// Safety:
+    /// Ensure plugin is called before the first `tick`
+    unsafe fn plugin(&self, scheduler: &mut Scheduler);
 }

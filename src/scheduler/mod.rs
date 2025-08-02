@@ -2,7 +2,7 @@ use std::{any::TypeId, collections::{HashMap, HashSet}, sync::{atomic::{AtomicUs
 
 use tracing::{event, Level};
 
-use crate::{id::{event_id::SchedulerEvent, system_id::SystemId, Id}, parameters::injections::{owned::Owned, shared::Shared, unique::Unique}, scheduler::{accesses::{access::Access, access_map::AccessMap}, blacklists::Blacklists, events::{CurrentEvents, NewEvents}, execution_graph::{ordering::SchedulerOrdering, ExecutionGraph}, interrupts::{CurrentInterrupts, NewInterrupts}, phase::Phase, resources::{new_resources::NewResources, resource_map::{access_checked_resource_map::AccessCheckedResourceMap, ResourceMap}, system_resource::{system_resource_ptr::SystemResourcePtr, SystemResource}, Resource}, tick::{current_tick::{tick_incrementor, CurrentTick}, lifetime::Lifetime, Tick}}, systems::{async_system::waker::DummyWaker, stored_system::{inner_stored_system::InnerStoredSystem, StoredSystem}, system_cell::SystemCell, system_flag::SystemFlag, system_status::SystemStatus}};
+use crate::{id::{event_id::SchedulerEvent, system_id::SystemId, Id}, parameters::injections::{owned::Owned, shared::Shared, unique::Unique}, scheduler::{accesses::{access::Access, access_map::AccessMap}, blacklists::Blacklists, events::{CurrentEvents, NewEvents}, execution_graph::{ordering::SchedulerOrdering, ExecutionGraph}, interrupts::{CurrentInterrupts, NewInterrupts}, phase::Phase, resources::{new_resources::NewResources, resource_map::{access_checked_resource_map::AccessCheckedResourceMap, ResourceMap}, system_resource::{system_resource_ptr::SystemResourcePtr, SystemResource}, Resource}, tick::{current_tick::{tick_incrementor, CurrentTick}, lifetime::Lifetime, Tick}}, systems::{async_system::waker::DummyWaker, stored_system::{inner_stored_system::InnerStoredSystem, Criteria, StoredSystem}, system_cell::SystemCell, system_flag::SystemFlag, system_status::SystemStatus}};
 
 pub mod accesses;
 pub mod resources;
@@ -50,7 +50,9 @@ impl Default for Scheduler {
                 events.contains(&SchedulerEvent::from(Id::from(&Phase::PreProcessing)))
             },
             SchedulerOrdering::default(),
-            HashSet::new()
+            HashSet::new(),
+            // None since my criteria fn already does it
+            None
         );
 
         scheduler.default_systems.push(tick_id);
@@ -122,18 +124,28 @@ impl Scheduler {
         unsafe { self.resources.read().resolve::<Shared<CurrentTick>>().unwrap().tick }
     }
 
-    pub fn insert_system(
+    pub fn insert_system<F>(
         &mut self,
         display_name: String,
         system: InnerStoredSystem,
-        wake_up_criteria: fn(&HashSet<SchedulerEvent>) -> bool,
+        wake_up_criteria: F,
         ordering: SchedulerOrdering,
-        flags: HashSet<SystemFlag>,        
-    ) -> SystemId {
+        flags: HashSet<SystemFlag>,  
+        phase: Option<Phase>,      
+    ) -> SystemId 
+        where F: Fn(&HashSet<SchedulerEvent>) -> bool + Send + Sync + 'static
+    {
         let system_id = SystemId::from(Id::from(display_name.as_str()));
         self.ids.write().unwrap().insert(display_name.clone());
 
-        let system = StoredSystem::new(system, wake_up_criteria, display_name, ordering, flags);
+        let wake_up_criteria: Box<dyn Fn(&HashSet<SchedulerEvent>) -> bool + Send + Sync> = if let Some(phase) = phase {
+            Box::new(move |events| wake_up_criteria(events) && events.contains(&SchedulerEvent::from(Id::from(&phase))))
+        } else {
+            Box::new(wake_up_criteria)
+        };
+
+
+        let system = StoredSystem::new(system, Criteria(wake_up_criteria), display_name, ordering, flags);
 
         self.systems.as_mut().unwrap().insert(system_id.clone(), system);
 
@@ -216,49 +228,77 @@ impl Scheduler {
     }
 
     pub fn tick(&mut self) {
-        for phase in Phase::iter_fields().take(3) {
+        let mut phases = Phase::iter_fields();
+        // Safety:
+        // Uses locks internally
+        {
+            let phase = phases.next().unwrap();
+            assert_eq!(phase, Phase::Ticking);
+
+            event!(Level::INFO, phase = ?phase, "Executing Scheduler Phase: {:?}", phase);
+            let resource_guard = self.resources.read();
+
+
+            // Safety:
+            // Uses locks internally
+            let mut current_events = unsafe { resource_guard.resolve::<Unique<CurrentEvents>>().unwrap() };
+            current_events.tick(
+                // Safety:
+                // Uses locks internally
+                *unsafe { resource_guard.resolve::<Unique<NewEvents>>().unwrap() }
+            );
+
+            for (target, insert) in self.catfishes.iter() {
+                if current_events.events().contains(&target) {
+                    current_events.insert(insert.clone());
+                }
+            }
+
+            // Safety:
+            // Uses locks internally
+            let mut current_interrupts = unsafe { resource_guard.resolve::<Unique<CurrentInterrupts>>().unwrap() };
+            current_interrupts.tick(
+                // Safety:
+                // Uses locks internally
+                *unsafe { resource_guard.resolve::<Unique<NewInterrupts>>().unwrap() }
+            );
+            current_interrupts.extend(self.current_background_systems.iter().map(|(system_id, _)| system_id.clone()));
+
+            // Safety:
+            // Blacklists blacklisted from background processes
+            unsafe { resource_guard.resolve::<Unique<Blacklists>>().unwrap().tick() }; 
+        }
+
+        // skip `Ticking`, take `PreProcessing, Processing, PostProcessing`
+        for _ in 0..3 {
+            let phase = phases.next().unwrap();
             event!(Level::INFO, phase = ?phase, "Executing Scheduler Phase: {phase:?}");
 
             let (execution_graphs, running_systems, bubbles) = {
                 let resource_guard = self.resources.read();
 
-                self.bubbles.retain_mut(|(lifetime, _, _)| lifetime.tick());
+                //self.bubbles.retain_mut(|(lifetime, _, _)| lifetime.tick());
 
-                for (mut lifetime, bubble) in self.bubble_echoes.drain(..).collect::<Vec<_>>() {
-                    if lifetime.tick() {
-                        self.bubble_echoes.push((lifetime, bubble));
-                    } else {
-                        self.bubbles.push(bubble);
-                    }
-                }
+                // TODO bubble echoes -> only start ticking if criteria satisfied
+                // then when ticked create a bubble, restart timer & stop ticking
+                // for (mut lifetime, bubble) in self.bubble_echoes.drain(..).collect::<Vec<_>>() {
+                //     if lifetime.tick() {
+                //         self.bubble_echoes.push((lifetime, bubble));
+                //     } else {
+                //         self.bubbles.push(bubble);
+                //     }
+                // }
 
                 // Safety:
                 // Uses locks internally
                 let mut current_events = unsafe { resource_guard.resolve::<Unique<CurrentEvents>>().unwrap() };
-                current_events.tick(
-                    // Safety:
-                    // Uses locks internally
-                    *unsafe { resource_guard.resolve::<Unique<NewEvents>>().unwrap() }
-                );
-    
                 current_events.insert(SchedulerEvent::from(Id::from(&phase)));
 
-                for (target, insert) in self.catfishes.iter() {
-                    if current_events.events().contains(&target) {
-                        current_events.insert(insert.clone());
-                    }
-                }
     
                 // Safety:
-                // Uses locks internally
-                let mut current_interrupts = unsafe { resource_guard.resolve::<Unique<CurrentInterrupts>>().unwrap() };
-                current_interrupts.tick(
-                    // Safety:
-                    // Uses locks internally
-                    *unsafe { resource_guard.resolve::<Unique<NewInterrupts>>().unwrap() }
-                );
-    
-                current_interrupts.extend(self.current_background_systems.iter().map(|(system_id, _)| system_id.clone()));
+                // no other system can run with mutable access (and uses locks)
+                let current_interrupts = unsafe { resource_guard.resolve::<Shared<CurrentInterrupts>>().unwrap() };    
+                
     
                 // Safety:
                 // Background threads only have read access and no other systems are runnign
@@ -363,38 +403,47 @@ impl Scheduler {
 
             let resource_guard = self.resources.read();
             // Safety:
-            // Blacklists blacklisted from background processes
-            unsafe { resource_guard.resolve::<Unique<Blacklists>>().unwrap().get_mut(&phase).unwrap().tick() }; 
+            // Uses locks internally
+            let mut current_events = unsafe { resource_guard.resolve::<Unique<CurrentEvents>>().unwrap() };
+            current_events.remove(&SchedulerEvent::from(Id::from(&phase)));
         }
 
-        event!(Level::INFO, phase = ?Phase::BackgroundEnd, "Executing Scheduler Phase: {:?}", Phase::BackgroundEnd);
-        let mut retain = Vec::new();
-        for (system_id, join_handle) in self.current_background_systems.drain(..).collect::<Vec<_>>() {
-            if join_handle.is_finished() {
-                let system = self.systems.as_mut().unwrap().get_mut(&system_id).unwrap();
+        {
+            let phase = phases.next().unwrap();
+            assert_eq!(phase, Phase::BackgroundEnd);
 
-                let inner_system = join_handle.join().unwrap();
-                system.insert_system(inner_system);
-
-                self.background_accesses.blocking_write().remove(&system_id);
-
-                *system.status().lock().unwrap() = SystemStatus::Init;
-
-                self.insert_new_event::<Id>(system_id.into());
-            } else {
-                retain.push((system_id, join_handle));
+            event!(Level::INFO, phase = ?phase, "Executing Scheduler Phase: {:?}", phase);
+            let mut retain = Vec::new();
+            for (system_id, join_handle) in self.current_background_systems.drain(..).collect::<Vec<_>>() {
+                if join_handle.is_finished() {
+                    let system = self.systems.as_mut().unwrap().get_mut(&system_id).unwrap();
+    
+                    let inner_system = join_handle.join().unwrap();
+                    system.insert_system(inner_system);
+    
+                    self.background_accesses.blocking_write().remove(&system_id);
+    
+                    *system.status().lock().unwrap() = SystemStatus::Init;
+    
+                    self.insert_new_event::<Id>(system_id.into());
+                } else {
+                    retain.push((system_id, join_handle));
+                }
             }
         }
 
         {
-            event!(Level::INFO, phase = ?Phase::BackgroundStart, "Executing Scheduler Phase: {:?}", Phase::BackgroundStart);
+            let phase = phases.next().unwrap();
+            assert_eq!(phase, Phase::BackgroundStart);
+
+            event!(Level::INFO, phase = ?phase, "Executing Scheduler Phase: {:?}", phase);
             let to_execute = {
                 let resource_guard = self.resources.read();
                 
                 // Safety:
                 // Uses locks internally
                 let mut current_events = unsafe { resource_guard.resolve::<Unique<CurrentEvents>>().unwrap() };
-                current_events.insert(SchedulerEvent::from(Id::from(&Phase::BackgroundStart)));
+                current_events.insert(SchedulerEvent::from(Id::from(&phase)));
                     
                 // Safety:
                 // Uses locks internally
@@ -403,7 +452,7 @@ impl Scheduler {
                         
                 // Safety:
                 // Blacklists blacklisted from background processes
-                let blacklist = unsafe { resource_guard.resolve::<Shared<Blacklists>>().unwrap().get(&Phase::BackgroundStart).unwrap() };
+                let blacklist = unsafe { resource_guard.resolve::<Shared<Blacklists>>().unwrap().get(&phase).unwrap() };
                 let resource_keys = resource_guard.keys().collect();
                 let system_ptrs = self.systems.as_ref().unwrap().iter().filter_map(|(system_id, system)| {
                     if system.flags().contains(&SystemFlag::NonBlocking) {
@@ -520,7 +569,10 @@ impl Scheduler {
         }
     
         {
-            event!(Level::INFO, phase = ?Phase::Movement, "Executing Scheduler Phase: {:?}", Phase::Movement);
+            let phase = phases.next().unwrap();
+            assert_eq!(phase, Phase::Movement);
+
+            event!(Level::INFO, phase = ?phase, "Executing Scheduler Phase: {:?}", phase);
             let resources = self.resources.read();
             // Safety:
             // Uses locks internally

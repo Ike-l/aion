@@ -4,10 +4,18 @@ use crate::{id::event_id::SchedulerEvent, scheduler::{accesses::Accesses, execut
 
 pub mod inner_stored_system;
 
+pub struct Criteria(pub Box<dyn Fn(&HashSet<SchedulerEvent>) -> bool + Send + Sync>);
+
+impl std::fmt::Debug for Criteria {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Criteria")
+    }
+}
+
 #[derive(Debug, small_read_only::ReadOnly)]
 pub struct StoredSystem {
     system: Option<InnerStoredSystem>,
-    wake_up_criteria: fn(&HashSet<SchedulerEvent>) -> bool,
+    wake_up_criteria: Criteria,
     display_name: String,
     ordering: SchedulerOrdering,
     status: Mutex<SystemStatus>,
@@ -19,7 +27,7 @@ pub struct StoredSystem {
 impl StoredSystem {
     pub fn new(
         system: InnerStoredSystem,
-        wake_up_criteria: fn(&HashSet<SchedulerEvent>) -> bool,
+        wake_up_criteria: Criteria,
         display_name: String,
         ordering: SchedulerOrdering,
         flags: HashSet<SystemFlag>
@@ -39,7 +47,7 @@ impl StoredSystem {
     }
 
     pub fn wake_up(&self, events: &HashSet<SchedulerEvent>) -> bool {
-        (self.wake_up_criteria)(events)
+        (self.wake_up_criteria.0)(events)
     }
 
     pub fn test_criteria(&self, resources: &HashSet<&TypeId>) -> bool {
