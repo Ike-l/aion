@@ -2,13 +2,14 @@ use std::{any::TypeId, collections::{HashMap, HashSet}, sync::{atomic::{AtomicUs
 
 use tracing::{event, Level};
 
-use crate::{id::{event_id::SchedulerEvent, system_id::SystemId, Id}, parameters::injections::{owned::Owned, shared::Shared, unique::Unique}, scheduler::{accesses::{access::Access, access_map::AccessMap}, blacklists::Blacklists, events::{CurrentEvents, NewEvents}, execution_graph::{ordering::SchedulerOrdering, ExecutionGraph}, interrupts::{CurrentInterrupts, NewInterrupts}, phase::Phase, resources::{new_resources::NewResources, resource_map::{access_checked_resource_map::AccessCheckedResourceMap, ResourceMap}, system_resource::{system_resource_ptr::SystemResourcePtr, SystemResource}, Resource}, tick::{current_tick::{tick_incrementor, CurrentTick}, lifetime::Lifetime, Tick}}, systems::{async_system::waker::DummyWaker, stored_system::{inner_stored_system::InnerStoredSystem, Criteria, StoredSystem}, system_cell::SystemCell, system_flag::SystemFlag, system_status::SystemStatus}};
+use crate::{id::{event_id::SchedulerEvent, system_id::SystemId, Id}, parameters::injections::{owned::Owned, shared::Shared, unique::Unique}, scheduler::{accesses::{access::Access, access_map::AccessMap}, blacklists::Blacklists, events::{CurrentEvents, NewEvents}, execution_graph::{ordering::SchedulerOrdering, ExecutionGraph}, interrupts::{CurrentInterrupts, NewInterrupts}, phase::Phase, resources::{new_resources::NewResources, resource_map::{access_checked_resource_map::AccessCheckedResourceMap, ResourceMap}, system_resource::{system_resource_ptr::SystemResourcePtr, SystemResource}, Resource}, system_event::SystemEvent, tick::{current_tick::{tick_incrementor, CurrentTick}, lifetime::Lifetime, Tick}}, systems::{async_system::waker::DummyWaker, stored_system::{inner_stored_system::InnerStoredSystem, Criteria, StoredSystem}, system_cell::SystemCell, system_flag::SystemFlag, system_status::SystemStatus}};
 
 pub mod accesses;
 pub mod resources;
 pub mod execution_graph;
 pub mod blacklists;
 pub mod tick;
+pub mod system_event;
 
 pub mod interrupts;
 pub mod events;
@@ -22,7 +23,7 @@ pub struct Scheduler {
     resources: Arc<parking_lot::RwLock<ResourceMap>>,
     system_resources: Arc<HashMap<SystemId, Arc<SystemResource>>>,
 
-    ids: Arc<RwLock<HashSet<String>>>,
+    ids: Arc<RwLock<HashMap<SystemId, String>>>,
     systems: Option<HashMap<SystemId, StoredSystem>>,
 
     bubbles: Vec<(Lifetime, String, fn(&HashSet<SchedulerEvent>) -> bool)>,
@@ -106,7 +107,7 @@ impl Scheduler {
         Self {
             resources: Arc::new(parking_lot::RwLock::new(ResourceMap::default())),
             system_resources: Arc::new(HashMap::new()),
-            ids: Arc::new(RwLock::new(HashSet::new())),
+            ids: Arc::new(RwLock::new(HashMap::new())),
             systems: Some(HashMap::new()),
             bubbles: Vec::new(),
             bubble_echoes: Vec::new(),
@@ -136,7 +137,7 @@ impl Scheduler {
         where F: Fn(&HashSet<SchedulerEvent>) -> bool + Send + Sync + 'static
     {
         let system_id = SystemId::from(Id::from(display_name.as_str()));
-        self.ids.write().unwrap().insert(display_name.clone());
+        self.ids.write().unwrap().insert(system_id.clone(), display_name.clone());
 
         let wake_up_criteria: Box<dyn Fn(&HashSet<SchedulerEvent>) -> bool + Send + Sync> = if let Some(phase) = phase {
             Box::new(move |events| wake_up_criteria(events) && events.contains(&SchedulerEvent::from(Id::from(&phase))))
@@ -209,6 +210,12 @@ impl Scheduler {
         unsafe { self.resources.read().resolve::<Unique<NewEvents>>().unwrap().insert(event.into()) };
     }
 
+    pub fn remove_new_event<T: Into<SchedulerEvent>>(&mut self, event: T) {
+        // Safety:
+        // Uses locks internally so multiple access is fine
+        unsafe { self.resources.read().resolve::<Unique<NewEvents>>().unwrap().remove(event.into()) };
+    }
+
     /// Safety:
     /// Ensure no reference alive when insert
     pub unsafe fn insert<T: 'static>(&mut self, type_id: TypeId, resource: T) -> Option<Resource> {
@@ -225,6 +232,18 @@ impl Scheduler {
     /// Ensure no reference alive when insert
     pub unsafe fn insert_auto_default<T: 'static + Default>(&mut self) -> Option<Resource> {
         unsafe { self.insert_auto(T::default()) }
+    }
+
+    pub fn conservatively_insert<T: 'static>(&mut self, type_id: TypeId, resource: T) {
+        self.resources.read().conservatively_insert(type_id, resource).unwrap();
+    }
+
+    pub fn conservatively_insert_auto<T: 'static>(&mut self, resource: T) {
+        self.conservatively_insert(TypeId::of::<T>(), resource)
+    }
+
+    pub fn conservatively_insert_auto_default<T: 'static + Default>(&mut self) {
+        self.conservatively_insert_auto(T::default())
     }
 
     pub fn tick(&mut self) {
@@ -272,6 +291,7 @@ impl Scheduler {
         // skip `Ticking`, take `PreProcessing, Processing, PostProcessing`
         for _ in 0..3 {
             let phase = phases.next().unwrap();
+            println!("Executing phase: {phase:?}");
             event!(Level::INFO, phase = ?phase, "Executing Scheduler Phase: {phase:?}");
 
             let (execution_graphs, running_systems, bubbles) = {
@@ -375,8 +395,8 @@ impl Scheduler {
             };
 
             if !execution_graphs.is_empty() {
-                for system in running_systems {
-                    self.insert_new_event::<Id>(system.into())
+                for system_id in running_systems {
+                    self.insert_new_event::<Id>(system_id.into())
                 }
 
                 for bubble in bubbles {
@@ -396,6 +416,29 @@ impl Scheduler {
 
                 for (system_id, error) in errors {
                     event!(Level::WARN, system_id = ?system_id, error = %error);
+
+                    if let Ok(event) = error.downcast::<SystemEvent>() {
+                        match event {
+                            SystemEvent::NoSystemEvent => self.remove_new_event::<Id>(system_id.clone().into()),
+                            // SystemEvent::FailSystemEvent => {
+                            //     let new_event = {
+                            //         let ids = self.ids.read().unwrap();
+                            //         Id::from(format!("{}Failed", ids.get(&system_id).unwrap()).as_str())
+                            //     };
+            
+                            //     self.insert_new_event(new_event);
+                            // }
+                            SystemEvent::SignalEvent(signal) => {
+                                let new_event = {
+                                    let ids = self.ids.read().unwrap();
+                                    Id::from(format!("{}{signal}", ids.get(&system_id).unwrap()).as_str())
+                                };
+            
+                                self.insert_new_event(new_event);
+                            }
+                        }
+                        
+                    }
                 }
 
                 let _ = self.systems.insert(systems);
@@ -416,6 +459,8 @@ impl Scheduler {
             let mut retain = Vec::new();
             for (system_id, join_handle) in self.current_background_systems.drain(..).collect::<Vec<_>>() {
                 if join_handle.is_finished() {
+                    println!("System Finished: {:?}", self.ids.read().unwrap().get(&system_id));
+
                     let system = self.systems.as_mut().unwrap().get_mut(&system_id).unwrap();
     
                     let inner_system = join_handle.join().unwrap();
@@ -426,6 +471,7 @@ impl Scheduler {
                     *system.status().lock().unwrap() = SystemStatus::Init;
     
                     self.insert_new_event::<Id>(system_id.into());
+
                 } else {
                     retain.push((system_id, join_handle));
                 }
@@ -536,6 +582,7 @@ impl Scheduler {
                                                 let system_resource_map = SystemResourcePtr::new(Arc::clone(system_resource_maps.get(&system_id).unwrap())).unwrap();
                                                 drop(system_resource_maps);
                                                 if let InnerStoredSystem::Sync(sys) = &mut inner {
+                                                    println!("System Running: {:?}", ids.read().unwrap().get(&system_id));
                                                     unsafe { sys.run(
                                                         &scheduler_resource_map, 
                                                         Some(&system_resource_map),
@@ -630,7 +677,7 @@ impl Scheduler {
         mut systems: HashMap<SystemId, StoredSystem>,
         scheduler_resource_map: &Arc<parking_lot::RwLock<ResourceMap>>,
         system_resource_maps: &Arc<HashMap<SystemId, Arc<SystemResource>>>,
-        ids: &Arc<RwLock<HashSet<String>>>,
+        ids: &Arc<RwLock<HashMap<SystemId, String>>>,
         execution_graphs: Arc<Vec<tokio::sync::RwLock<ExecutionGraph<SystemId>>>>,
         accesses: &Arc<tokio::sync::RwLock<HashMap<SystemId, AccessMap>>>,
         threadpool: &threadpool::ThreadPool,
@@ -743,6 +790,7 @@ impl Scheduler {
 
                                                         match inner {
                                                             InnerStoredSystem::Sync(system) => {
+                                                                println!("System Running: {:?}", ids.read().unwrap().get(&system_id));
                                                                 if let Err(err) = unsafe { system.run(
                                                                     &scheduler_resource_map, 
                                                                     system_resource_map_ptrs.get(&system_id), 
@@ -756,8 +804,10 @@ impl Scheduler {
                                                                 *status = SystemStatus::Executed;
                                                                 current_graph.write().await.mark_as_complete(&system_id);
                                                                 accesses.write().await.remove(&system_id);
+                                                                println!("System Finished: {:?}", ids.read().unwrap().get(&system_id));
                                                             },
                                                             InnerStoredSystem::Async(system) => {
+                                                                println!("System Running: {:?}", ids.read().unwrap().get(&system_id));
                                                                 let mut task = unsafe { system.run(
                                                                     &scheduler_resource_map, 
                                                                     system_resource_map_ptrs.get(&system_id), 
@@ -781,11 +831,13 @@ impl Scheduler {
                                                                         if let Err(err) = result {
                                                                             errors.lock().await.push((system_id.clone(), err));
                                                                         }
-
+                                                                        
                                                                         current_graph.write().await.mark_as_complete(&system_id);
                                                                         *status = SystemStatus::Executed;
-
+                                                                        
                                                                         accesses.write().await.remove(&system_id);
+
+                                                                        println!("System Finished: {:?}", ids.read().unwrap().get(&system_id));
                                                                     }
                                                                 }
                                                             }

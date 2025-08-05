@@ -39,7 +39,7 @@ where
         // No concurrent accesses since Owned (ToOwned)
     }
 
-    fn criteria(owned_resources: &HashSet<&TypeId>) -> bool {
+    fn criteria(owned_resources: &HashSet<TypeId>) -> bool {
         owned_resources.contains(&TypeId::of::<Y>())
     }
 

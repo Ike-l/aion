@@ -13,6 +13,11 @@ impl NewEvents {
         let _guard = self.in_use.lock();
         self.events.insert(event)
     }
+
+    pub fn remove(&mut self, event: SchedulerEvent) {
+        let _guard = self.in_use.lock();
+        self.events.remove(&event);
+    }
 }
 
 #[derive(Debug, Default)]

@@ -14,12 +14,12 @@ pub trait AsyncSystem: Send + Sync {
         scheduler_resource_map: &'a ResourceMap,
         running_system_resource_map: Option<&'a SystemResourcePtr>,
         running_system_id: SystemId,
-        ids: Arc<RwLock<HashSet<String>>>,
+        ids: Arc<RwLock<HashMap<SystemId, String>>>,
         system_resource_maps: Option<&'a HashMap<SystemId, Arc<SystemResource>>>
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + 'a>>;
 
     /// Does the scheduler have the resources the SystemParam needs?
-    fn criteria(&self, owned_resources: &HashSet<&TypeId>) -> bool;
+    fn criteria(&self, owned_resources: &HashSet<TypeId>) -> bool;
     fn accesses(&self) -> Accesses;
     fn needs_system_resource(&self) -> bool;
 }
@@ -44,7 +44,7 @@ macro_rules! impl_async_system {
                 scheduler_resource_map: &'a ResourceMap,
                 system_resource_map: Option<&'a SystemResourcePtr>,
                 system_id: SystemId,
-                id_map: Arc<RwLock<HashSet<String>>>,
+                id_map: Arc<RwLock<HashMap<SystemId, String>>>,
                 system_resource_maps: Option<&'a HashMap<SystemId, Arc<SystemResource>>>,
             ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + 'a>> {
                 Box::pin(async move {
@@ -64,7 +64,7 @@ macro_rules! impl_async_system {
                 })                
             }
 
-            fn criteria(&self, owned_resources: &HashSet<&TypeId>) -> bool {
+            fn criteria(&self, owned_resources: &HashSet<TypeId>) -> bool {
                 let mut pass = true;
 
                 $(
@@ -113,7 +113,7 @@ impl_all_async_system!(T1, T2, T3, T4, T5, T6, T7, T8, T9);
 
 #[cfg(test)]
 mod async_system_tests {
-    use std::{any::TypeId, collections::HashSet, sync::{Arc, RwLock}, task::{Context, Poll, Waker}, time::Duration};
+    use std::{any::TypeId, collections::{HashMap, HashSet}, sync::{Arc, RwLock}, task::{Context, Poll, Waker}, time::Duration};
 
     use anyhow::Ok;
 
@@ -141,7 +141,7 @@ mod async_system_tests {
             &scheduler_resource_map, 
             None, 
             SystemId::from(Id::from("foo")), 
-            Arc::new(RwLock::new(HashSet::default())), 
+            Arc::new(RwLock::new(HashMap::default())), 
             None
         ) }).unwrap();
 
@@ -172,7 +172,7 @@ mod async_system_tests {
                 &scheduler_resource_map, 
                 None, 
                 SystemId::from(Id::from("foo")), 
-                Arc::new(RwLock::new(HashSet::default())), 
+                Arc::new(RwLock::new(HashMap::default())), 
                 None
             ) };
     
@@ -193,7 +193,7 @@ mod async_system_tests {
     fn can_pass_criteria() {
         let runnable = foo.into_system();
         let binding = TypeId::of::<Arc<tokio::sync::Mutex<usize>>>();
-        let owned_resources = HashSet::from([&binding]);
+        let owned_resources = HashSet::from([binding]);
         assert!(runnable.criteria(&owned_resources));
     }
 

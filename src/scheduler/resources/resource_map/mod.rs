@@ -7,6 +7,7 @@ use crate::{parameters::InjectionParam, scheduler::resources::{resource_wrapper:
 pub mod inner_resource_map;
 pub mod access_checked_resource_map;
 
+// Safety: Never give a reference to an unoccupied entry (since `conservatively` relies on there being no reference if there isnt an entry)
 #[derive(Debug, Default)]
 pub struct ResourceMap {
     in_use: parking_lot::RwLock<()>,
@@ -14,8 +15,8 @@ pub struct ResourceMap {
 }
 
 impl ResourceMap {
-    pub fn keys(&self) -> impl Iterator<Item = &TypeId> {
-        self.resources.get_map(&self.in_use).0.keys()
+    pub fn keys(&self) -> impl Iterator<Item = TypeId> {
+        self.resources.get_map(&self.in_use).0.keys().cloned()
     }
 
     pub fn conservatively_insert<T: 'static>(&self, type_id: TypeId, resource: T) -> anyhow::Result<()> {

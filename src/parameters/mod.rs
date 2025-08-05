@@ -18,7 +18,7 @@ pub trait InjectionParam {
     
     /// Does the scheduler have the resources the SystemParam needs?
     /// Default implementation compares `Accesses`
-    fn criteria(owned_resources: &HashSet<&TypeId>) -> bool {
+    fn criteria(owned_resources: &HashSet<TypeId>) -> bool {
         match Self::select_target() {
             Target::Scheduler => {
                 let mut accesses = AccessMap::new();
@@ -48,7 +48,7 @@ pub trait InjectionParam {
         system_resource_map: Option<&'a SystemResourcePtr>, 
         // Do i want to pass these to try_retrieve?
         _system_id: SystemId, 
-        _id_map: RwLockReadGuard<HashSet<String>>,
+        _id_map: RwLockReadGuard<HashMap<SystemId, String>>,
         _system_resource_maps: Option<&'a HashMap<
             SystemId, 
             Arc<SystemResource>

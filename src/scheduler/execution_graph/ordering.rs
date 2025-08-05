@@ -19,6 +19,18 @@ pub struct SchedulerOrdering {
     pub priority: f64
 }
 
+impl SchedulerOrdering {
+    pub fn before(mut self, system_id: SystemId) -> Self {
+        self.before.insert(system_id);
+        self
+    }
+    
+    pub fn after(mut self, system_id: SystemId) -> Self {
+        self.after.insert(system_id);
+        self
+    }
+}
+
 impl ExecutionOrdering for SchedulerOrdering {
     type Item = SystemId;
 

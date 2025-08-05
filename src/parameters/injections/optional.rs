@@ -30,7 +30,7 @@ impl<T: InjectionParam> InjectionParam for Optional<'_, T> {
         Some(Optional::new(unsafe { T::try_retrieve(resource_map) } ))
     }
 
-    fn criteria(_owned_resources: &HashSet<&TypeId>) -> bool {
+    fn criteria(_owned_resources: &HashSet<TypeId>) -> bool {
         true
     }
 

@@ -50,7 +50,7 @@ impl StoredSystem {
         (self.wake_up_criteria.0)(events)
     }
 
-    pub fn test_criteria(&self, resources: &HashSet<&TypeId>) -> bool {
+    pub fn test_criteria(&self, resources: &HashSet<TypeId>) -> bool {
         self.system.as_ref().unwrap().criteria(resources)
     }
 

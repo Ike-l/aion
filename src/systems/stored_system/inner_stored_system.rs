@@ -38,7 +38,7 @@ impl InnerStoredSystem {
         }
     }
 
-    pub fn criteria(&self, resources: &HashSet<&TypeId>) -> bool {
+    pub fn criteria(&self, resources: &HashSet<TypeId>) -> bool {
         match self {
             Self::Sync(s) => s.criteria(resources),
             Self::Async(s) => s.criteria(resources),

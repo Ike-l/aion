@@ -132,7 +132,7 @@ impl<T> ExecutionGraph<T> where T: Eq + Hash + Clone {
         nodes: &mut HashMap<&T, (HashSet<T>, f64)>, 
         current_path: Option<Rc<Node<T>>>, 
         seen_list: &mut HashSet<T>
-    ) -> bool {
+    ) {
         let leaves: HashSet<T> = match &current_path {
             Some(current_path) => {
                 nodes.iter().filter_map(|(node, (after, _))| {
@@ -154,16 +154,14 @@ impl<T> ExecutionGraph<T> where T: Eq + Hash + Clone {
             }
         };
 
-        let mut changed = false;
-
         for leaf in leaves {
             seen_list.insert(leaf.clone());
 
             if let Some((max, child_of_max)) = Self::find_max_priority_in_cycle(nodes, &current_path, &leaf) {
                 if let Some(child_of_max) = child_of_max {
-                    changed |= nodes.get_mut(child_of_max).unwrap().0.remove(max);
+                    nodes.get_mut(child_of_max).unwrap().0.remove(max);
                 } else {
-                    changed |= nodes.get_mut(&leaf).unwrap().0.remove(max)
+                    nodes.get_mut(&leaf).unwrap().0.remove(max);
                 }
             } else {
                 let new_current_path = if let Some(current_path) = &current_path {
@@ -178,13 +176,9 @@ impl<T> ExecutionGraph<T> where T: Eq + Hash + Clone {
                     }
                 };
 
-                let new_changed = Self::construct_paths(nodes, Some(Rc::new(new_current_path)), seen_list);
-
-                changed |= new_changed;
+                Self::construct_paths(nodes, Some(Rc::new(new_current_path)), seen_list);
             }
         }
-
-        changed
     }
 
     pub fn find_max_priority_in_cycle<'a>(
