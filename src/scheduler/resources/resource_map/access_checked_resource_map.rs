@@ -1,15 +1,15 @@
 use std::{collections::HashMap, sync::Arc};
 
-use crate::{id::system_id::SystemId, parameters::InjectionParam, scheduler::{accesses::access_map::AccessMap, resources::resource_map::ResourceMap}};
+use crate::{id::Id, parameters::InjectionParam, scheduler::{accesses::access_map::AccessMap, resources::resource_map::ResourceMap}};
 
 // TODO track resources borrowed with resolve 
 pub struct AccessCheckedResourceMap<'a> {
     resource_map: parking_lot::lock_api::RwLockReadGuard<'a, parking_lot::RawRwLock, ResourceMap>,
-    accesses: &'a Arc<tokio::sync::RwLock<HashMap<SystemId, AccessMap>>>,
+    accesses: &'a Arc<tokio::sync::RwLock<HashMap<Id, AccessMap>>>,
 }
 
 impl<'a> AccessCheckedResourceMap<'a> {
-    pub fn new(resource_map: &'a Arc<parking_lot::RwLock<ResourceMap>>, accesses: &'a Arc<tokio::sync::RwLock<HashMap<SystemId, AccessMap>>>) -> Self {
+    pub fn new(resource_map: &'a Arc<parking_lot::RwLock<ResourceMap>>, accesses: &'a Arc<tokio::sync::RwLock<HashMap<Id, AccessMap>>>) -> Self {
         Self {
             resource_map: resource_map.read(),
             accesses

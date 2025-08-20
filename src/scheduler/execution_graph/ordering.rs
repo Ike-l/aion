@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::id::system_id::SystemId;
+use crate::id::Id;
 
 pub trait ExecutionOrdering {
     type Item;
@@ -10,29 +10,29 @@ pub trait ExecutionOrdering {
     fn consume(self) -> ( HashSet<Self::Item>, HashSet<Self::Item>, f64 );
 }
 
-/// "Before": This node is "Before" everything in this HashSet<SystemId>
-/// Not to be confused with "Before": Everything in this HashSet<SystemId> is before this node
+/// "Before": This node is "Before" everything in this HashSet<Id>
+/// Not to be confused with "Before": Everything in this HashSet<Id> is before this node
 #[derive(Debug, Default, Clone)]
 pub struct SchedulerOrdering {
-    pub before: HashSet<SystemId>,
-    pub after: HashSet<SystemId>,
+    pub before: HashSet<Id>,
+    pub after: HashSet<Id>,
     pub priority: f64
 }
 
 impl SchedulerOrdering {
-    pub fn before(mut self, system_id: SystemId) -> Self {
+    pub fn before(mut self, system_id: Id) -> Self {
         self.before.insert(system_id);
         self
     }
     
-    pub fn after(mut self, system_id: SystemId) -> Self {
+    pub fn after(mut self, system_id: Id) -> Self {
         self.after.insert(system_id);
         self
     }
 }
 
 impl ExecutionOrdering for SchedulerOrdering {
-    type Item = SystemId;
+    type Item = Id;
 
     fn subsume(&self, superset: &HashSet<Self::Item>) -> Self {
         Self {

@@ -1,21 +1,21 @@
 use std::collections::HashSet;
 
-use crate::id::system_id::SystemId;
+use crate::id::Id;
 
 #[derive(Debug, Default)]
 pub struct NewInterrupts {
-    interrupts: HashSet<SystemId>
+    interrupts: HashSet<Id>
 }
 
 impl NewInterrupts {
-    pub fn insert(&mut self, interrupt: SystemId) -> bool {
-        self.interrupts.insert(interrupt)
+    pub fn insert<T: Into<Id>>(&mut self, interrupt: T) -> bool {
+        self.interrupts.insert(interrupt.into())
     }
 }
 
 #[derive(Debug, Default)]
 pub struct CurrentInterrupts {
-    interrupts: HashSet<SystemId>
+    interrupts: HashSet<Id>
 }
 
 impl CurrentInterrupts {
@@ -29,13 +29,13 @@ impl CurrentInterrupts {
         self
     }
 
-    pub fn contains(&self, system_id: &SystemId) -> bool {
+    pub fn contains(&self, system_id: &Id) -> bool {
         self.interrupts.contains(system_id)
     }
 }
 
-impl Extend<SystemId> for CurrentInterrupts {
-    fn extend<T: IntoIterator<Item = SystemId>>(&mut self, iter: T) {
+impl Extend<Id> for CurrentInterrupts {
+    fn extend<T: IntoIterator<Item = Id>>(&mut self, iter: T) {
         self.interrupts.extend(iter);
     }
 }

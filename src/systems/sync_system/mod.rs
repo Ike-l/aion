@@ -1,6 +1,6 @@
 use std::{any::TypeId, collections::{HashMap, HashSet}, sync::{Arc, RwLock}};
 
-use crate::{id::system_id::SystemId, parameters::{InjectionParam, Target}, scheduler::{accesses::{access_map::AccessMap, Accesses}, resources::{resource_map::ResourceMap, system_resource::{system_resource_ptr::SystemResourcePtr, SystemResource}}}, systems::FunctionSystem};
+use crate::{id::Id, parameters::{InjectionParam, Target}, scheduler::{accesses::{access_map::AccessMap, Accesses}, resources::{resource_map::ResourceMap, system_resource::{system_resource_ptr::SystemResourcePtr, SystemResource}}}, systems::FunctionSystem};
 
 pub mod into_sync;
 
@@ -11,9 +11,9 @@ pub trait SyncSystem: Send + Sync {
         &mut self,
         scheduler_resource_map: &ResourceMap,
         running_system_resource_map: Option<&SystemResourcePtr>,
-        running_system_id: SystemId,
-        ids: Arc<RwLock<HashMap<SystemId, String>>>,
-        system_resource_maps: Option<&HashMap<SystemId, Arc<SystemResource>>>
+        running_system_id: Id,
+        ids: Arc<RwLock<HashMap<u64, String>>>,
+        system_resource_maps: Option<&HashMap<Id, Arc<SystemResource>>>
     ) -> anyhow::Result<()>;
 
     /// Does the scheduler have the resources the SystemParam needs?
@@ -40,9 +40,9 @@ macro_rules! impl_sync_system {
                 &mut self,
                 scheduler_resource_map: &ResourceMap,
                 system_resource_map: Option<&SystemResourcePtr>,
-                system_id: SystemId,
-                id_map: Arc<RwLock<HashMap<SystemId, String>>>,
-                system_resource_maps: Option<&HashMap<SystemId, Arc<SystemResource>>>,
+                system_id: Id,
+                id_map: Arc<RwLock<HashMap<u64, String>>>,
+                system_resource_maps: Option<&HashMap<Id, Arc<SystemResource>>>,
             ) -> anyhow::Result<()> {
                 fn call_inner<$($params),*>(
                     mut f: impl FnMut($($params),*) -> anyhow::Result<()>,
@@ -118,7 +118,7 @@ impl_all_sync_system!(T1, T2, T3, T4, T5, T6, T7, T8, T9);
 mod sync_system_tests {
     use std::{any::TypeId, collections::{HashMap, HashSet}, sync::{Arc, RwLock}};
 
-    use crate::{id::{system_id::SystemId, Id}, parameters::injections::{shared::Shared, unique::Unique}, scheduler::{accesses::{access::Access, access_map::AccessMap, Accesses}, resources::resource_map::ResourceMap}, systems::sync_system::{into_sync::IntoSyncSystem, SyncSystem}};
+    use crate::{id::Id, parameters::injections::{shared::Shared, unique::Unique}, scheduler::{accesses::{access::Access, access_map::AccessMap, Accesses}, resources::resource_map::ResourceMap}, systems::sync_system::{into_sync::IntoSyncSystem, SyncSystem}};
 
     fn foo(mut channel: Unique<usize>) -> anyhow::Result<()> {
         **channel = 1;
@@ -136,7 +136,7 @@ mod sync_system_tests {
         unsafe { runnable.run(
             &scheduler_resource_map, 
             None, 
-            SystemId::from(Id::from("foo")), 
+            Id::from("foo"), 
             Arc::new(RwLock::new(HashMap::default())), 
             None
         ).unwrap() };

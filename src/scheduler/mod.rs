@@ -2,7 +2,7 @@ use std::{any::TypeId, collections::{HashMap, HashSet}, sync::{atomic::{AtomicUs
 
 use tracing::{event, Level};
 
-use crate::{id::{event_id::SchedulerEvent, system_id::SystemId, Id}, parameters::injections::{owned::Owned, shared::Shared, unique::Unique}, scheduler::{accesses::{access::Access, access_map::AccessMap}, blacklists::Blacklists, events::{CurrentEvents, NewEvents}, execution_graph::{ordering::SchedulerOrdering, ExecutionGraph}, interrupts::{CurrentInterrupts, NewInterrupts}, phase::Phase, resources::{new_resources::NewResources, resource_map::{access_checked_resource_map::AccessCheckedResourceMap, ResourceMap}, system_resource::{system_resource_ptr::SystemResourcePtr, SystemResource}, Resource}, system_event::SystemEvent, tick::{current_tick::{tick_incrementor, CurrentTick}, lifetime::Lifetime, Tick}}, systems::{async_system::waker::DummyWaker, stored_system::{inner_stored_system::InnerStoredSystem, Criteria, StoredSystem}, system_cell::SystemCell, system_flag::SystemFlag, system_status::SystemStatus}};
+use crate::{id::Id, parameters::injections::{owned::Owned, shared::Shared, unique::Unique}, scheduler::{accesses::{access::Access, access_map::AccessMap}, blacklists::Blacklists, events::{CurrentEvents, NewEvents}, execution_graph::{ordering::SchedulerOrdering, ExecutionGraph}, interrupts::{CurrentInterrupts, NewInterrupts}, phase::Phase, resources::{new_resources::NewResources, resource_map::{access_checked_resource_map::AccessCheckedResourceMap, ResourceMap}, system_resource::{system_resource_ptr::SystemResourcePtr, SystemResource}, Resource}, system_event::SystemEvent, tick::{current_tick::{tick_incrementor, CurrentTick}, lifetime::Lifetime, Tick}}, systems::{async_system::waker::DummyWaker, stored_system::{inner_stored_system::InnerStoredSystem, Criteria, StoredSystem}, system_cell::SystemCell, system_flag::SystemFlag, system_status::SystemStatus}};
 
 pub mod accesses;
 pub mod resources;
@@ -21,20 +21,22 @@ pub mod builder;
 pub struct Scheduler {
     // Notes: Always check if resource is being used in background_accesses
     resources: Arc<parking_lot::RwLock<ResourceMap>>,
-    system_resources: Arc<HashMap<SystemId, Arc<SystemResource>>>,
+    system_resources: Arc<HashMap<Id, Arc<SystemResource>>>,
 
-    ids: Arc<RwLock<HashMap<SystemId, String>>>,
-    systems: Option<HashMap<SystemId, StoredSystem>>,
+    ids: Arc<RwLock<HashMap<u64, String>>>,
+    generations: HashMap<u64, u64>,
 
-    bubbles: Vec<(Lifetime, String, fn(&HashSet<SchedulerEvent>) -> bool)>,
-    bubble_echoes: Vec<(Lifetime, (Lifetime, String, fn(&HashSet<SchedulerEvent>) -> bool))>,
-    catfishes: Vec<(SchedulerEvent, SchedulerEvent)>,
+    systems: Option<HashMap<Id, StoredSystem>>,
 
-    default_systems: Vec<SystemId>,
+    bubbles: Vec<(Lifetime, String, fn(&HashSet<Id>) -> bool)>,
+    bubble_echoes: Vec<(Lifetime, (Lifetime, String, fn(&HashSet<Id>) -> bool))>,
+    catfishes: Vec<(Id, Id)>,
+
+    default_systems: Vec<Id>,
     
-    current_background_systems: Vec<(SystemId, JoinHandle<InnerStoredSystem>)>,
+    current_background_systems: Vec<(Id, JoinHandle<InnerStoredSystem>)>,
 
-    background_accesses: Arc<tokio::sync::RwLock<HashMap<SystemId, AccessMap>>>,
+    background_accesses: Arc<tokio::sync::RwLock<HashMap<Id, AccessMap>>>,
 
     threadpool: threadpool::ThreadPool
 }
@@ -48,7 +50,7 @@ impl Default for Scheduler {
             "Standard Tick Accumulator".to_string(),
             InnerStoredSystem::new_sync(tick_incrementor),
             |events| { 
-                events.contains(&SchedulerEvent::from(Id::from(&Phase::PreProcessing)))
+                events.contains(&Id::from(&Phase::PreProcessing))
             },
             SchedulerOrdering::default(),
             HashSet::new(),
@@ -108,6 +110,7 @@ impl Scheduler {
             resources: Arc::new(parking_lot::RwLock::new(ResourceMap::default())),
             system_resources: Arc::new(HashMap::new()),
             ids: Arc::new(RwLock::new(HashMap::new())),
+            generations: HashMap::new(),
             systems: Some(HashMap::new()),
             bubbles: Vec::new(),
             bubble_echoes: Vec::new(),
@@ -133,14 +136,14 @@ impl Scheduler {
         ordering: SchedulerOrdering,
         flags: HashSet<SystemFlag>,  
         phase: Option<Phase>,      
-    ) -> SystemId 
-        where F: Fn(&HashSet<SchedulerEvent>) -> bool + Send + Sync + 'static
+    ) -> Id 
+        where F: Fn(&HashSet<Id>) -> bool + Send + Sync + 'static
     {
-        let system_id = SystemId::from(Id::from(display_name.as_str()));
-        self.ids.write().unwrap().insert(system_id.clone(), display_name.clone());
+        let system_id = Id::new(display_name.as_str(), &mut self.generations);
+        self.ids.write().unwrap().insert(system_id.id().clone(), display_name.clone());
 
-        let wake_up_criteria: Box<dyn Fn(&HashSet<SchedulerEvent>) -> bool + Send + Sync> = if let Some(phase) = phase {
-            Box::new(move |events| wake_up_criteria(events) && events.contains(&SchedulerEvent::from(Id::from(&phase))))
+        let wake_up_criteria: Box<dyn Fn(&HashSet<Id>) -> bool + Send + Sync> = if let Some(phase) = phase {
+            Box::new(move |events| wake_up_criteria(events) && events.contains(&Id::from(&phase)))
         } else {
             Box::new(wake_up_criteria)
         };
@@ -157,7 +160,7 @@ impl Scheduler {
     pub fn insert_bubble(
         &mut self,
         display_name: String,
-        wake_up_criteria: fn(&HashSet<SchedulerEvent>) -> bool
+        wake_up_criteria: fn(&HashSet<Id>) -> bool
     ) {
         self.insert_bubble_column(Lifetime::new(self.current_tick(), Tick(1)), display_name, wake_up_criteria);
     }
@@ -167,7 +170,7 @@ impl Scheduler {
         &mut self, 
         lifetime: Lifetime, 
         display_name: String, 
-        wake_up_criteria: fn(&HashSet<SchedulerEvent>) -> bool
+        wake_up_criteria: fn(&HashSet<Id>) -> bool
     ) {
         self.bubbles.push((lifetime, display_name, wake_up_criteria));
     }
@@ -178,7 +181,7 @@ impl Scheduler {
         echo_lifetime: Lifetime,
         bubble_lifetime: Lifetime,
         display_name: String,
-        wake_up_criteria: fn(&HashSet<SchedulerEvent>) -> bool
+        wake_up_criteria: fn(&HashSet<Id>) -> bool
     ) {
         self.bubble_echoes.push((echo_lifetime, (bubble_lifetime, display_name, wake_up_criteria)))
     }
@@ -186,8 +189,8 @@ impl Scheduler {
     /// catfish an event: when the event is noticed, create another specified event
     pub fn catfish(
         &mut self,
-        target_event: SchedulerEvent,
-        to_insert: SchedulerEvent,
+        target_event: Id,
+        to_insert: Id,
     ) {
         self.catfishes.push((target_event, to_insert));
     }
@@ -204,13 +207,13 @@ impl Scheduler {
         unsafe { self.resources.read().resolve::<Owned<T, S>>() }
     }
 
-    pub fn insert_new_event<T: Into<SchedulerEvent>>(&mut self, event: T) {
+    pub fn insert_new_event<T: Into<Id>>(&mut self, event: T) {
         // Safety:
         // Uses locks internally so multiple access is fine
         unsafe { self.resources.read().resolve::<Unique<NewEvents>>().unwrap().insert(event.into()) };
     }
 
-    pub fn remove_new_event<T: Into<SchedulerEvent>>(&mut self, event: T) {
+    pub fn remove_new_event<T: Into<Id>>(&mut self, event: T) {
         // Safety:
         // Uses locks internally so multiple access is fine
         unsafe { self.resources.read().resolve::<Unique<NewEvents>>().unwrap().remove(event.into()) };
@@ -315,7 +318,7 @@ impl Scheduler {
                 // Safety:
                 // Uses locks internally
                 let mut current_events = unsafe { resource_guard.resolve::<Unique<CurrentEvents>>().unwrap() };
-                current_events.insert(SchedulerEvent::from(Id::from(&phase)));
+                current_events.insert(&phase);
 
     
                 // Safety:
@@ -366,7 +369,7 @@ impl Scheduler {
 
                 let bubbles = self.bubbles.iter().filter_map(|(_, bubble_name, crit)| {
                     if crit(&current_events.events()) {
-                        Some(SchedulerEvent::from(Id::from(bubble_name.as_str())))
+                        Some(Id::from(bubble_name.as_str()))
                     } else {
                         None
                     }
@@ -434,7 +437,7 @@ impl Scheduler {
                             SystemEvent::SignalEvent(signal) => {
                                 let new_event = {
                                     let ids = self.ids.read().unwrap();
-                                    Id::from(format!("{}{signal}", ids.get(&system_id).unwrap()).as_str())
+                                    Id::from(format!("{}{signal}", ids.get(system_id.id()).unwrap()).as_str())
                                 };
             
                                 self.insert_new_event(new_event);
@@ -451,7 +454,7 @@ impl Scheduler {
             // Safety:
             // Uses locks internally
             let mut current_events = unsafe { resource_guard.resolve::<Unique<CurrentEvents>>().unwrap() };
-            current_events.remove(&SchedulerEvent::from(Id::from(&phase)));
+            current_events.remove(&Id::from(&phase));
         }
 
         {
@@ -492,7 +495,7 @@ impl Scheduler {
                 // Safety:
                 // Uses locks internally
                 let mut current_events = unsafe { resource_guard.resolve::<Unique<CurrentEvents>>().unwrap() };
-                current_events.insert(SchedulerEvent::from(Id::from(&phase)));
+                current_events.insert(&phase);
                     
                 // Safety:
                 // Uses locks internally
@@ -637,10 +640,10 @@ impl Scheduler {
         }
     }
 
-    pub fn lift_independent<'a, T>(systems: T) -> impl Iterator<Item = Vec<(&'a StoredSystem, SystemId)>> 
-        where T: Iterator<Item = (SystemId, &'a StoredSystem)>
+    pub fn lift_independent<'a, T>(systems: T) -> impl Iterator<Item = Vec<(&'a StoredSystem, Id)>> 
+        where T: Iterator<Item = (Id, &'a StoredSystem)>
     {
-        let mut independent: Vec<HashSet<SystemId>> = Vec::new();
+        let mut independent: Vec<HashSet<Id>> = Vec::new();
         let mut system_mapping = HashMap::new();
 
         for (system_id, system) in systems {
@@ -677,14 +680,14 @@ impl Scheduler {
     }
 
     pub fn execute_graphs(
-        mut systems: HashMap<SystemId, StoredSystem>,
+        mut systems: HashMap<Id, StoredSystem>,
         scheduler_resource_map: &Arc<parking_lot::RwLock<ResourceMap>>,
-        system_resource_maps: &Arc<HashMap<SystemId, Arc<SystemResource>>>,
-        ids: &Arc<RwLock<HashMap<SystemId, String>>>,
-        execution_graphs: Arc<Vec<tokio::sync::RwLock<ExecutionGraph<SystemId>>>>,
-        accesses: &Arc<tokio::sync::RwLock<HashMap<SystemId, AccessMap>>>,
+        system_resource_maps: &Arc<HashMap<Id, Arc<SystemResource>>>,
+        ids: &Arc<RwLock<HashMap<u64, String>>>,
+        execution_graphs: Arc<Vec<tokio::sync::RwLock<ExecutionGraph<Id>>>>,
+        accesses: &Arc<tokio::sync::RwLock<HashMap<Id, AccessMap>>>,
         threadpool: &threadpool::ThreadPool,
-    ) -> (HashMap<SystemId, StoredSystem>, Vec<(SystemId, anyhow::Error)>) {
+    ) -> (HashMap<Id, StoredSystem>, Vec<(Id, anyhow::Error)>) {
         let errors = Arc::new(tokio::sync::Mutex::new(Vec::new()));
 
         let graph_count = execution_graphs.len();
@@ -745,7 +748,7 @@ impl Scheduler {
                                 let leaf_count = current_graph.read().await.leaves().count();
                                 if leaf_count > 0 {
                                     let nth_leaf = if let Some((system_id, status)) = current_graph.read().await.leaves().nth(chain % leaf_count) {
-                                        if status.load(Ordering::Acquire) == ExecutionGraph::<SystemId>::PENDING {
+                                        if status.load(Ordering::Acquire) == ExecutionGraph::<Id>::PENDING {
                                             None
                                         } else {
                                             Some(system_id.clone())

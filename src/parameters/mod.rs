@@ -2,7 +2,7 @@ pub mod injections;
 
 use std::{any::{type_name, TypeId}, collections::{HashMap, HashSet}, sync::{Arc, RwLockReadGuard}};
 
-use crate::{id::system_id::SystemId, scheduler::{accesses::{access::Access, access_map::AccessMap}, resources::{resource_map::ResourceMap, system_resource::{system_resource_ptr::SystemResourcePtr, SystemResource}}}};
+use crate::{id::Id, scheduler::{accesses::{access::Access, access_map::AccessMap}, resources::{resource_map::ResourceMap, system_resource::{system_resource_ptr::SystemResourcePtr, SystemResource}}}};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Target {
@@ -47,10 +47,10 @@ pub trait InjectionParam {
         scheduler_resource_map: &'a ResourceMap,
         system_resource_map: Option<&'a SystemResourcePtr>, 
         // Do i want to pass these to try_retrieve?
-        _system_id: SystemId, 
-        _id_map: RwLockReadGuard<HashMap<SystemId, String>>,
+        _system_id: Id, 
+        _id_map: RwLockReadGuard<HashMap<u64, String>>,
         _system_resource_maps: Option<&'a HashMap<
-            SystemId, 
+            Id, 
             Arc<SystemResource>
         >>,
         ) -> anyhow::Result<Self::Item<'a>> { 

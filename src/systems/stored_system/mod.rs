@@ -1,10 +1,10 @@
 use std::{any::TypeId, collections::HashSet, sync::Mutex};
 
-use crate::{id::event_id::SchedulerEvent, scheduler::{accesses::Accesses, execution_graph::ordering::SchedulerOrdering}, systems::{stored_system::inner_stored_system::InnerStoredSystem, system_flag::SystemFlag, system_status::SystemStatus}};
+use crate::{id::Id, scheduler::{accesses::Accesses, execution_graph::ordering::SchedulerOrdering}, systems::{stored_system::inner_stored_system::InnerStoredSystem, system_flag::SystemFlag, system_status::SystemStatus}};
 
 pub mod inner_stored_system;
 
-pub struct Criteria(pub Box<dyn Fn(&HashSet<SchedulerEvent>) -> bool + Send + Sync>);
+pub struct Criteria(pub Box<dyn Fn(&HashSet<Id>) -> bool + Send + Sync>);
 
 impl std::fmt::Debug for Criteria {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -46,7 +46,7 @@ impl StoredSystem {
         }
     }
 
-    pub fn wake_up(&self, events: &HashSet<SchedulerEvent>) -> bool {
+    pub fn wake_up(&self, events: &HashSet<Id>) -> bool {
         (self.wake_up_criteria.0)(events)
     }
 

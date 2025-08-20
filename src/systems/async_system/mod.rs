@@ -1,6 +1,6 @@
 use std::{any::TypeId, collections::{HashMap, HashSet}, pin::Pin, sync::{Arc, RwLock}};
 
-use crate::{id::system_id::SystemId, parameters::{InjectionParam, Target}, scheduler::{accesses::{access_map::AccessMap, Accesses}, resources::{resource_map::ResourceMap, system_resource::{system_resource_ptr::SystemResourcePtr, SystemResource}}}, systems::FunctionSystem};
+use crate::{id::Id, parameters::{InjectionParam, Target}, scheduler::{accesses::{access_map::AccessMap, Accesses}, resources::{resource_map::ResourceMap, system_resource::{system_resource_ptr::SystemResourcePtr, SystemResource}}}, systems::FunctionSystem};
 
 pub mod into_async;
 pub mod waker;
@@ -13,9 +13,9 @@ pub trait AsyncSystem: Send + Sync {
         &'a mut self,
         scheduler_resource_map: &'a ResourceMap,
         running_system_resource_map: Option<&'a SystemResourcePtr>,
-        running_system_id: SystemId,
-        ids: Arc<RwLock<HashMap<SystemId, String>>>,
-        system_resource_maps: Option<&'a HashMap<SystemId, Arc<SystemResource>>>
+        running_system_id: Id,
+        ids: Arc<RwLock<HashMap<u64, String>>>,
+        system_resource_maps: Option<&'a HashMap<Id, Arc<SystemResource>>>
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + 'a>>;
 
     /// Does the scheduler have the resources the SystemParam needs?
@@ -43,9 +43,9 @@ macro_rules! impl_async_system {
                 &'a mut self,
                 scheduler_resource_map: &'a ResourceMap,
                 system_resource_map: Option<&'a SystemResourcePtr>,
-                system_id: SystemId,
-                id_map: Arc<RwLock<HashMap<SystemId, String>>>,
-                system_resource_maps: Option<&'a HashMap<SystemId, Arc<SystemResource>>>,
+                system_id: Id,
+                id_map: Arc<RwLock<HashMap<u64, String>>>,
+                system_resource_maps: Option<&'a HashMap<Id, Arc<SystemResource>>>,
             ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + 'a>> {
                 Box::pin(async move {
                     $(
@@ -117,7 +117,7 @@ mod async_system_tests {
 
     use anyhow::Ok;
 
-    use crate::{id::{system_id::SystemId, Id}, parameters::injections::{arc_mutex::ArcMutex, shared::Shared, take::Take}, scheduler::{accesses::{access::Access, access_map::AccessMap, Accesses}, resources::resource_map::ResourceMap}, systems::async_system::{into_async::IntoAsyncSystem, waker::DummyWaker, AsyncSystem}};
+    use crate::{id::Id, parameters::injections::{arc_mutex::ArcMutex, shared::Shared, take::Take}, scheduler::{accesses::{access::Access, access_map::AccessMap, Accesses}, resources::resource_map::ResourceMap}, systems::async_system::{into_async::IntoAsyncSystem, waker::DummyWaker, AsyncSystem}};
 
     async fn foo(channel: ArcMutex<usize>) -> anyhow::Result<()> {
         *pollster::block_on(channel.lock()) = 1;
@@ -140,7 +140,7 @@ mod async_system_tests {
         pollster::block_on(unsafe { runnable.run(
             &scheduler_resource_map, 
             None, 
-            SystemId::from(Id::from("foo")), 
+            Id::from("foo"), 
             Arc::new(RwLock::new(HashMap::default())), 
             None
         ) }).unwrap();
@@ -171,7 +171,7 @@ mod async_system_tests {
             let mut fut = unsafe { runnable.run(
                 &scheduler_resource_map, 
                 None, 
-                SystemId::from(Id::from("foo")), 
+                Id::from("foo"), 
                 Arc::new(RwLock::new(HashMap::default())), 
                 None
             ) };
