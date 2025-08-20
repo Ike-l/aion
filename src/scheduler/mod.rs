@@ -192,7 +192,7 @@ impl Scheduler {
         self.catfishes.push((target_event, to_insert));
     }
 
-    pub fn resolve(&self) -> AccessCheckedResourceMap<'_> {
+    pub fn resources(&self) -> AccessCheckedResourceMap<'_> {
         AccessCheckedResourceMap::new(&self.resources, &self.background_accesses)
     }
 
@@ -234,15 +234,15 @@ impl Scheduler {
         unsafe { self.insert_auto(T::default()) }
     }
 
-    pub fn conservatively_insert<T: 'static>(&mut self, type_id: TypeId, resource: T) {
-        self.resources.read().conservatively_insert(type_id, resource).unwrap();
+    pub fn conservatively_insert<T: 'static>(&mut self, type_id: TypeId, resource: T) -> anyhow::Result<()> {
+        self.resources.read().conservatively_insert(type_id, resource)
     }
 
-    pub fn conservatively_insert_auto<T: 'static>(&mut self, resource: T) {
+    pub fn conservatively_insert_auto<T: 'static>(&mut self, resource: T) -> anyhow::Result<()> {
         self.conservatively_insert(TypeId::of::<T>(), resource)
     }
 
-    pub fn conservatively_insert_auto_default<T: 'static + Default>(&mut self) {
+    pub fn conservatively_insert_auto_default<T: 'static + Default>(&mut self) -> anyhow::Result<()> {
         self.conservatively_insert_auto(T::default())
     }
 
@@ -299,6 +299,9 @@ impl Scheduler {
 
                 //self.bubbles.retain_mut(|(lifetime, _, _)| lifetime.tick());
 
+                if !self.bubble_echoes.is_empty() {
+                    todo!()
+                }
                 // TODO bubble echoes -> only start ticking if criteria satisfied
                 // then when ticked create a bubble, restart timer & stop ticking
                 // for (mut lifetime, bubble) in self.bubble_echoes.drain(..).collect::<Vec<_>>() {
@@ -459,7 +462,7 @@ impl Scheduler {
             let mut retain = Vec::new();
             for (system_id, join_handle) in self.current_background_systems.drain(..).collect::<Vec<_>>() {
                 if join_handle.is_finished() {
-                    println!("System Finished: {:?}", self.ids.read().unwrap().get(&system_id));
+                    // println!("System Finished: {:?}", self.ids.read().unwrap().get(&system_id));
 
                     let system = self.systems.as_mut().unwrap().get_mut(&system_id).unwrap();
     
@@ -582,7 +585,7 @@ impl Scheduler {
                                                 let system_resource_map = SystemResourcePtr::new(Arc::clone(system_resource_maps.get(&system_id).unwrap())).unwrap();
                                                 drop(system_resource_maps);
                                                 if let InnerStoredSystem::Sync(sys) = &mut inner {
-                                                    println!("System Running: {:?}", ids.read().unwrap().get(&system_id));
+                                                    // println!("System Running: {:?}", ids.read().unwrap().get(&system_id));
                                                     unsafe { sys.run(
                                                         &scheduler_resource_map, 
                                                         Some(&system_resource_map),
@@ -790,7 +793,7 @@ impl Scheduler {
 
                                                         match inner {
                                                             InnerStoredSystem::Sync(system) => {
-                                                                println!("System Running: {:?}", ids.read().unwrap().get(&system_id));
+                                                                // println!("System Running: {:?}", ids.read().unwrap().get(&system_id));
                                                                 if let Err(err) = unsafe { system.run(
                                                                     &scheduler_resource_map, 
                                                                     system_resource_map_ptrs.get(&system_id), 
@@ -804,10 +807,10 @@ impl Scheduler {
                                                                 *status = SystemStatus::Executed;
                                                                 current_graph.write().await.mark_as_complete(&system_id);
                                                                 accesses.write().await.remove(&system_id);
-                                                                println!("System Finished: {:?}", ids.read().unwrap().get(&system_id));
+                                                                // println!("System Finished: {:?}", ids.read().unwrap().get(&system_id));
                                                             },
                                                             InnerStoredSystem::Async(system) => {
-                                                                println!("System Running: {:?}", ids.read().unwrap().get(&system_id));
+                                                                // println!("System Running: {:?}", ids.read().unwrap().get(&system_id));
                                                                 let mut task = unsafe { system.run(
                                                                     &scheduler_resource_map, 
                                                                     system_resource_map_ptrs.get(&system_id), 
@@ -837,7 +840,7 @@ impl Scheduler {
                                                                         
                                                                         accesses.write().await.remove(&system_id);
 
-                                                                        println!("System Finished: {:?}", ids.read().unwrap().get(&system_id));
+                                                                        // println!("System Finished: {:?}", ids.read().unwrap().get(&system_id));
                                                                     }
                                                                 }
                                                             }
