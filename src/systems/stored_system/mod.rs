@@ -51,7 +51,11 @@ impl StoredSystem {
     }
 
     pub fn test_criteria(&self, resources: &HashSet<TypeId>) -> bool {
-        self.system.as_ref().unwrap().criteria(resources)
+        if let Some(system) = &self.system {
+            system.criteria(resources)
+        } else {
+            false
+        }
     }
 
     pub fn take_system(&mut self) -> Option<InnerStoredSystem> {

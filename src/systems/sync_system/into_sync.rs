@@ -1,5 +1,4 @@
-use crate::{parameters::InjectionParam, systems::FunctionSystem};
-
+use crate::{parameters::InjectionParam, scheduler::system_event::SystemResult, systems::FunctionSystem};
 
 pub trait IntoSyncSystem<Input> {
     type System: super::SyncSystem;
@@ -15,8 +14,8 @@ macro_rules! impl_into_sync_system {
             where
                 F: Send + Sync,
                 for<'a, 'b> &'a mut F:
-                    FnMut($($params),*) -> anyhow::Result<()> +
-                    FnMut($(<$params as InjectionParam>::Item<'b>),*) -> anyhow::Result<()> 
+                    FnMut($($params),*) -> Option<SystemResult> +
+                    FnMut($(<$params as InjectionParam>::Item<'b>),*) -> Option<SystemResult> 
         {
             type System = FunctionSystem<($($params,)*), Self>;
 

@@ -1,6 +1,6 @@
 use std::{any::TypeId, collections::{HashMap, HashSet}, pin::Pin, sync::{Arc, RwLock}};
 
-use crate::{id::Id, parameters::{InjectionParam, Target}, scheduler::{accesses::{access_map::AccessMap, Accesses}, resources::{resource_map::ResourceMap, system_resource::{system_resource_ptr::SystemResourcePtr, SystemResource}}}, systems::FunctionSystem};
+use crate::{id::Id, parameters::{InjectionParam, Target}, scheduler::{accesses::{access_map::AccessMap, Accesses}, resources::{resource_map::ResourceMap, system_resource::{system_resource_ptr::SystemResourcePtr, SystemResource}}, system_event::SystemResult}, systems::FunctionSystem};
 
 pub mod into_async;
 pub mod waker;
@@ -16,7 +16,7 @@ pub trait AsyncSystem: Send + Sync {
         running_system_id: Id,
         ids: Arc<RwLock<HashMap<u64, String>>>,
         system_resource_maps: Option<&'a HashMap<Id, Arc<SystemResource>>>
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Option<SystemResult>> + 'a>>;
 
     /// Does the scheduler have the resources the SystemParam needs?
     fn criteria(&self, owned_resources: &HashSet<TypeId>) -> bool;
@@ -33,7 +33,7 @@ macro_rules! impl_async_system {
         #[allow(unused)]
         impl<F, Fut, $($params: InjectionParam),*> AsyncSystem for FunctionSystem<($($params,)*), F>
         where
-            Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
+            Fut: Future<Output = Option<SystemResult>> + Send + 'static,
             F: Send + Sync,
             for<'b> F: 
                 FnMut($($params),*) -> Fut +
@@ -46,7 +46,7 @@ macro_rules! impl_async_system {
                 system_id: Id,
                 id_map: Arc<RwLock<HashMap<u64, String>>>,
                 system_resource_maps: Option<&'a HashMap<Id, Arc<SystemResource>>>,
-            ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + 'a>> {
+            ) -> Pin<Box<dyn Future<Output = Option<SystemResult>> + 'a>> {
                 Box::pin(async move {
                     $(
                         let $params = unsafe { $params::retrieve(
@@ -55,7 +55,7 @@ macro_rules! impl_async_system {
                             system_id.clone(), 
                             id_map.read().unwrap(),
                             system_resource_maps, 
-                        )? };
+                        ).ok()? };
                     )*
 
                     drop(id_map);
@@ -114,19 +114,16 @@ impl_all_async_system!(T1, T2, T3, T4, T5, T6, T7, T8, T9);
 #[cfg(test)]
 mod async_system_tests {
     use std::{any::TypeId, collections::{HashMap, HashSet}, sync::{Arc, RwLock}, task::{Context, Poll, Waker}, time::Duration};
+    use crate::{id::Id, parameters::injections::{arc_mutex::ArcMutex, shared::Shared, take::Take}, scheduler::{accesses::{access::Access, access_map::AccessMap, Accesses}, resources::resource_map::ResourceMap, system_event::SystemResult}, systems::async_system::{into_async::IntoAsyncSystem, waker::DummyWaker, AsyncSystem}};
 
-    use anyhow::Ok;
-
-    use crate::{id::Id, parameters::injections::{arc_mutex::ArcMutex, shared::Shared, take::Take}, scheduler::{accesses::{access::Access, access_map::AccessMap, Accesses}, resources::resource_map::ResourceMap}, systems::async_system::{into_async::IntoAsyncSystem, waker::DummyWaker, AsyncSystem}};
-
-    async fn foo(channel: ArcMutex<usize>) -> anyhow::Result<()> {
+    async fn foo(channel: ArcMutex<usize>) -> Option<SystemResult> {
         *pollster::block_on(channel.lock()) = 1;
-        Ok(())
+        None
     }
 
-    async fn bar(duration: Take<f32>) -> anyhow::Result<()> {
+    async fn bar(duration: Take<f32>) -> Option<SystemResult> {
         tokio::time::sleep(Duration::from_secs_f32(*duration)).await;
-        Ok(())
+        None
     }
  
     #[test]

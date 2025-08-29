@@ -1,5 +1,3 @@
-use std::fmt::Display;
-
 #[derive(Debug)]
 pub enum SystemEvent {
     /// Ensures the scheduler removes the system event from new events
@@ -10,8 +8,8 @@ pub enum SystemEvent {
     SignalEvent(String),
 }
 
-impl Display for SystemEvent {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Scheduler Event")        
-    }
+#[derive(Debug)]
+pub enum SystemResult {
+    SystemEvent(SystemEvent),
+    Error(anyhow::Error)
 }

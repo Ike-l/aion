@@ -1,8 +1,6 @@
 use std::time::{Duration, Instant};
 
-use anyhow::Ok;
-
-use crate::{parameters::injections::unique::Unique, scheduler::tick::Tick};
+use crate::{parameters::injections::unique::Unique, scheduler::{system_event::SystemResult, tick::Tick}};
 
 #[derive(Debug)]
 pub struct CurrentTick {
@@ -25,7 +23,7 @@ impl Default for CurrentTick {
 
 // https://english.stackexchange.com/questions/507012/incrementor-vs-incrementer
 // Phase::Pre
-pub fn tick_incrementor(mut current_tick: Unique<CurrentTick>) -> anyhow::Result<()> {
+pub fn tick_incrementor(mut current_tick: Unique<CurrentTick>) -> Option<SystemResult> {
     let current_time = Instant::now();
     let dt = current_time.duration_since(current_tick.time);
     
@@ -33,5 +31,5 @@ pub fn tick_incrementor(mut current_tick: Unique<CurrentTick>) -> anyhow::Result
     current_tick.dt = dt;
     current_tick.time = current_time;
 
-    Ok(())
+    None
 }

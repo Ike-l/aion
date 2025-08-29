@@ -1,6 +1,6 @@
 use std::{any::TypeId, collections::{HashMap, HashSet}, sync::{Arc, RwLock}};
 
-use crate::{id::Id, parameters::{InjectionParam, Target}, scheduler::{accesses::{access_map::AccessMap, Accesses}, resources::{resource_map::ResourceMap, system_resource::{system_resource_ptr::SystemResourcePtr, SystemResource}}}, systems::FunctionSystem};
+use crate::{id::Id, parameters::{InjectionParam, Target}, scheduler::{accesses::{access_map::AccessMap, Accesses}, resources::{resource_map::ResourceMap, system_resource::{system_resource_ptr::SystemResourcePtr, SystemResource}}, system_event::SystemResult}, systems::FunctionSystem};
 
 pub mod into_sync;
 
@@ -14,7 +14,7 @@ pub trait SyncSystem: Send + Sync {
         running_system_id: Id,
         ids: Arc<RwLock<HashMap<u64, String>>>,
         system_resource_maps: Option<&HashMap<Id, Arc<SystemResource>>>
-    ) -> anyhow::Result<()>;
+    ) -> Option<SystemResult>;
 
     /// Does the scheduler have the resources the SystemParam needs?
     fn criteria(&self, owned_resources: &HashSet<TypeId>) -> bool;
@@ -33,8 +33,8 @@ macro_rules! impl_sync_system {
             where
                 F: Send + Sync,
                 for<'a, 'b> &'a mut F:
-                    FnMut($($params),*) -> anyhow::Result<()> +
-                    FnMut($(<$params as InjectionParam>::Item<'b>),*) -> anyhow::Result<()> 
+                    FnMut($($params),*) -> Option<SystemResult> +
+                    FnMut($(<$params as InjectionParam>::Item<'b>),*) -> Option<SystemResult> 
         {
             unsafe fn run(
                 &mut self,
@@ -43,11 +43,11 @@ macro_rules! impl_sync_system {
                 system_id: Id,
                 id_map: Arc<RwLock<HashMap<u64, String>>>,
                 system_resource_maps: Option<&HashMap<Id, Arc<SystemResource>>>,
-            ) -> anyhow::Result<()> {
+            ) -> Option<SystemResult> {
                 fn call_inner<$($params),*>(
-                    mut f: impl FnMut($($params),*) -> anyhow::Result<()>,
+                    mut f: impl FnMut($($params),*) -> Option<SystemResult>,
                     $($params: $params),*
-                ) -> anyhow::Result<()> {
+                ) -> Option<SystemResult> {
                     f($($params),*)
                 }
 
@@ -58,7 +58,7 @@ macro_rules! impl_sync_system {
                         system_id.clone(), 
                         id_map.read().unwrap(),
                         system_resource_maps, 
-                    )? };
+                    ).ok()? };
                 )*
 
                 drop(id_map);
@@ -118,11 +118,11 @@ impl_all_sync_system!(T1, T2, T3, T4, T5, T6, T7, T8, T9);
 mod sync_system_tests {
     use std::{any::TypeId, collections::{HashMap, HashSet}, sync::{Arc, RwLock}};
 
-    use crate::{id::Id, parameters::injections::{shared::Shared, unique::Unique}, scheduler::{accesses::{access::Access, access_map::AccessMap, Accesses}, resources::resource_map::ResourceMap}, systems::sync_system::{into_sync::IntoSyncSystem, SyncSystem}};
+    use crate::{id::Id, parameters::injections::{shared::Shared, unique::Unique}, scheduler::{accesses::{access::Access, access_map::AccessMap, Accesses}, resources::resource_map::ResourceMap, system_event::SystemResult}, systems::sync_system::{into_sync::IntoSyncSystem, SyncSystem}};
 
-    fn foo(mut channel: Unique<usize>) -> anyhow::Result<()> {
+    fn foo(mut channel: Unique<usize>) -> Option<SystemResult> {
         **channel = 1;
-        Ok(())
+        None
     }
 
     #[test]

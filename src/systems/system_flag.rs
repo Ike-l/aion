@@ -8,5 +8,7 @@ pub enum SystemFlag {
     // If fails criteria - will panic
     HasRequirements,
     // If is blocked by a blacklist
-    NotBlacklisted
+    NotBlacklisted,
+    // If an error returns from running the function: panic
+    Succeeds
 }

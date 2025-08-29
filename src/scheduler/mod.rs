@@ -2,7 +2,7 @@ use std::{any::TypeId, collections::{HashMap, HashSet}, sync::{atomic::{AtomicUs
 
 use tracing::{event, Level};
 
-use crate::{id::Id, parameters::injections::{owned::Owned, shared::Shared, unique::Unique}, scheduler::{accesses::{access::Access, access_map::AccessMap}, blacklists::Blacklists, events::{CurrentEvents, NewEvents}, execution_graph::{ordering::SchedulerOrdering, ExecutionGraph}, interrupts::{CurrentInterrupts, NewInterrupts}, phase::Phase, resources::{new_resources::NewResources, resource_map::{access_checked_resource_map::AccessCheckedResourceMap, ResourceMap}, system_resource::{system_resource_ptr::SystemResourcePtr, SystemResource}, Resource}, system_event::SystemEvent, tick::{current_tick::{tick_incrementor, CurrentTick}, lifetime::Lifetime, Tick}}, systems::{async_system::waker::DummyWaker, stored_system::{inner_stored_system::InnerStoredSystem, Criteria, StoredSystem}, system_cell::SystemCell, system_flag::SystemFlag, system_status::SystemStatus}};
+use crate::{id::Id, parameters::injections::{owned::Owned, shared::Shared, unique::Unique}, scheduler::{accesses::{access::Access, access_map::AccessMap}, blacklists::Blacklists, events::{CurrentEvents, NewEvents}, execution_graph::{ordering::SchedulerOrdering, ExecutionGraph}, interrupts::{CurrentInterrupts, NewInterrupts}, phase::Phase, resources::{new_resources::NewResources, resource_map::{access_checked_resource_map::AccessCheckedResourceMap, ResourceMap}, system_resource::{system_resource_ptr::SystemResourcePtr, SystemResource}, Resource}, system_event::{SystemEvent, SystemResult}, tick::{current_tick::{tick_incrementor, CurrentTick}, lifetime::Lifetime, Tick}}, systems::{async_system::waker::DummyWaker, stored_system::{inner_stored_system::InnerStoredSystem, Criteria, StoredSystem}, system_cell::SystemCell, system_flag::SystemFlag, system_status::SystemStatus}};
 
 pub mod accesses;
 pub mod resources;
@@ -134,7 +134,7 @@ impl Scheduler {
         system: InnerStoredSystem,
         wake_up_criteria: F,
         ordering: SchedulerOrdering,
-        flags: HashSet<SystemFlag>,  
+        mut flags: HashSet<SystemFlag>,  
         phase: Option<Phase>,      
     ) -> Id 
         where F: Fn(&HashSet<Id>) -> bool + Send + Sync + 'static
@@ -148,10 +148,14 @@ impl Scheduler {
             Box::new(wake_up_criteria)
         };
 
+        #[cfg(any(test, debug_assertions))]
+        flags.extend([SystemFlag::HasRequirements, SystemFlag::NotBlacklisted, SystemFlag::Succeeds]);
 
         let system = StoredSystem::new(system, Criteria(wake_up_criteria), display_name, ordering, flags);
 
         self.systems.as_mut().unwrap().insert(system_id.clone(), system);
+
+        Arc::get_mut(&mut self.system_resources).unwrap().insert(system_id.clone(), Arc::new(SystemResource::default()));
 
         system_id
     }
@@ -402,6 +406,7 @@ impl Scheduler {
 
             if !execution_graphs.is_empty() {
                 for system_id in running_systems {
+                    //println!("System Id: {system_id:?}");
                     self.insert_new_event::<Id>(system_id.into())
                 }
 
@@ -420,30 +425,38 @@ impl Scheduler {
                     &self.threadpool
                 );
 
-                for (system_id, error) in errors {
-                    event!(Level::WARN, system_id = ?system_id, error = %error);
+                for (system_id, system_result) in errors {
+                    if systems.get(&system_id).unwrap().flags().contains(&SystemFlag::Succeeds) {
+                        panic!("{:?}", system_result);
+                    }
 
-                    if let Ok(event) = error.downcast::<SystemEvent>() {
-                        match event {
-                            SystemEvent::NoSystemEvent => self.remove_new_event::<Id>(system_id.clone().into()),
-                            // SystemEvent::FailSystemEvent => {
-                            //     let new_event = {
-                            //         let ids = self.ids.read().unwrap();
-                            //         Id::from(format!("{}Failed", ids.get(&system_id).unwrap()).as_str())
-                            //     };
-            
-                            //     self.insert_new_event(new_event);
-                            // }
-                            SystemEvent::SignalEvent(signal) => {
-                                let new_event = {
-                                    let ids = self.ids.read().unwrap();
-                                    Id::from(format!("{}{signal}", ids.get(system_id.id()).unwrap()).as_str())
-                                };
-            
-                                self.insert_new_event(new_event);
+                    event!(Level::WARN, system_id = ?system_id, system_result = ?system_result);
+
+                    match system_result {
+                        SystemResult::Error(error) => {
+                            panic!("{}", error)
+                        }
+                        SystemResult::SystemEvent(event) => {
+                            match event {
+                                SystemEvent::NoSystemEvent => self.remove_new_event::<Id>(system_id.clone().into()),
+                                // SystemEvent::FailSystemEvent => {
+                                //     let new_event = {
+                                //         let ids = self.ids.read().unwrap();
+                                //         Id::from(format!("{}Failed", ids.get(&system_id).unwrap()).as_str())
+                                //     };
+                
+                                //     self.insert_new_event(new_event);
+                                // }
+                                SystemEvent::SignalEvent(signal) => {
+                                    let new_event = {
+                                        let ids = self.ids.read().unwrap();
+                                        Id::from(format!("{}{signal}", ids.get(system_id.id()).unwrap()).as_str())
+                                    };
+                
+                                    self.insert_new_event(new_event);
+                                }
                             }
                         }
-                        
                     }
                 }
 
@@ -465,7 +478,7 @@ impl Scheduler {
             let mut retain = Vec::new();
             for (system_id, join_handle) in self.current_background_systems.drain(..).collect::<Vec<_>>() {
                 if join_handle.is_finished() {
-                    // println!("System Finished: {:?}", self.ids.read().unwrap().get(&system_id));
+                    println!("System Finished: {:?}", self.ids.read().unwrap().get(system_id.id()));
 
                     let system = self.systems.as_mut().unwrap().get_mut(&system_id).unwrap();
     
@@ -482,6 +495,8 @@ impl Scheduler {
                     retain.push((system_id, join_handle));
                 }
             }
+
+            self.current_background_systems.extend(retain);
         }
 
         {
@@ -515,6 +530,7 @@ impl Scheduler {
                 });
         
                 system_ptrs
+                    .filter(|(_, s)| s.system().is_some())
                     .filter(|(s, _)| !current_interrupts.contains(s))
                     .filter(|(_, s)| s.wake_up(&current_events.events()))
                     .filter(|(_, s)| {
@@ -687,7 +703,7 @@ impl Scheduler {
         execution_graphs: Arc<Vec<tokio::sync::RwLock<ExecutionGraph<Id>>>>,
         accesses: &Arc<tokio::sync::RwLock<HashMap<Id, AccessMap>>>,
         threadpool: &threadpool::ThreadPool,
-    ) -> (HashMap<Id, StoredSystem>, Vec<(Id, anyhow::Error)>) {
+    ) -> (HashMap<Id, StoredSystem>, Vec<(Id, SystemResult)>) {
         let errors = Arc::new(tokio::sync::Mutex::new(Vec::new()));
 
         let graph_count = execution_graphs.len();
@@ -703,8 +719,12 @@ impl Scheduler {
             }
         }).collect::<HashMap<_, _>>());
 
-        let inner_stored_systems: Arc<HashMap<_, _>> = Arc::new(systems.iter_mut().map(|(system_id, system)| {
-            (system_id.clone(), SystemCell::new(system.take_system().unwrap()))
+        let inner_stored_systems: Arc<HashMap<_, _>> = Arc::new(systems.iter_mut().filter_map(|(system_id, system)| {
+            if let Some(system) = system.take_system() {
+                Some((system_id.clone(), SystemCell::new(system)))
+            } else {
+                None
+            }
         }).collect());
 
 
@@ -796,15 +816,15 @@ impl Scheduler {
 
                                                         match inner {
                                                             InnerStoredSystem::Sync(system) => {
-                                                                // println!("System Running: {:?}", ids.read().unwrap().get(&system_id));
-                                                                if let Err(err) = unsafe { system.run(
+                                                                //println!("System Running: {:?}", ids.read().unwrap().get(system_id.id()));
+                                                                if let Some(result) = unsafe { system.run(
                                                                     &scheduler_resource_map, 
                                                                     system_resource_map_ptrs.get(&system_id), 
                                                                     system_id.clone(), 
                                                                     Arc::clone(&ids), 
                                                                     Some(&system_resource_maps)
                                                                 ) } {
-                                                                    errors.lock().await.push((system_id.clone(), err));
+                                                                    errors.lock().await.push((system_id.clone(), result));
                                                                 }
 
                                                                 *status = SystemStatus::Executed;
@@ -834,8 +854,8 @@ impl Scheduler {
                                                                         ));
                                                                     },
                                                                     Poll::Ready(result) => {
-                                                                        if let Err(err) = result {
-                                                                            errors.lock().await.push((system_id.clone(), err));
+                                                                        if let Some(result) = result {
+                                                                            errors.lock().await.push((system_id.clone(), result));
                                                                         }
                                                                         
                                                                         current_graph.write().await.mark_as_complete(&system_id);
@@ -883,8 +903,8 @@ impl Scheduler {
                                             not_done.push((graph_number, system_id, fut));
                                         },
                                         Poll::Ready(result) => {
-                                            if let Err(err) = result {
-                                                errors.lock().await.push((system_id.clone(), err));
+                                            if let Some(result) = result {
+                                                errors.lock().await.push((system_id.clone(), result));
                                             }
 
                                             let system = systems.get(&system_id).unwrap();

@@ -1,4 +1,4 @@
-use crate::{parameters::InjectionParam, systems::{async_system::AsyncSystem, FunctionSystem}};
+use crate::{parameters::InjectionParam, scheduler::system_event::SystemResult, systems::{async_system::AsyncSystem, FunctionSystem}};
 
 pub trait IntoAsyncSystem<Input> {
     type System: AsyncSystem;
@@ -12,7 +12,7 @@ macro_rules! impl_into_async_system {
     ) => {
         impl<F, Fut, $($params: InjectionParam),*> IntoAsyncSystem<($($params,)*)> for F
         where
-            Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
+            Fut: Future<Output = Option<SystemResult>> + Send + 'static,
             F: Send + Sync,
             // Since cant do &'a mut F since impl Future needs ownership means cant tie lifetime of parameters to lifetime of caller hence InjectionParam with a lifetime won't work in async functions (can clone or arc clone?)
             for<'b> F: 
