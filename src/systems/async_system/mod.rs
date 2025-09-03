@@ -118,9 +118,9 @@ mod async_system_tests {
 
     async fn foo(channel: ArcMutex<usize>) -> Option<SystemResult> {
         *pollster::block_on(channel.lock()) = 1;
-        None
+        Some(SystemResult::Success)
     }
-
+    
     async fn bar(duration: Take<f32>) -> Option<SystemResult> {
         tokio::time::sleep(Duration::from_secs_f32(*duration)).await;
         None

@@ -10,6 +10,9 @@ pub enum SystemEvent {
 
 #[derive(Debug)]
 pub enum SystemResult {
+    // Success does nothing
+    Success,
     SystemEvent(SystemEvent),
+    // panics with the error
     Error(anyhow::Error)
 }

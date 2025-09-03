@@ -122,7 +122,7 @@ mod sync_system_tests {
 
     fn foo(mut channel: Unique<usize>) -> Option<SystemResult> {
         **channel = 1;
-        None
+        Some(SystemResult::Success)
     }
 
     #[test]

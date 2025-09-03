@@ -122,6 +122,24 @@ impl Scheduler {
         }
     }
 
+    pub fn check_orderering(&self) -> Option<(&StoredSystem, &Id)> {
+        for (_, system) in self.systems.as_ref().unwrap() {
+            let ids = self.ids.read().unwrap();
+
+            let satisfied = system.ordering().after.iter().find(|dependent| !ids.contains_key(dependent.id()));
+            if let Some(id) = satisfied {
+                return Some((system, id));
+            }
+
+            let satisfied = system.ordering().before.iter().find(|dependent| !ids.contains_key(dependent.id()));
+            if let Some(id) = satisfied {
+                return Some((system, id));
+            }
+        }
+
+        None
+    }
+
     pub fn current_tick(&self) -> Tick {
         // Safety:
         // Is `copy` so doesnt `access` per se
@@ -382,22 +400,19 @@ impl Scheduler {
                 (if to_execute.is_empty() {
                     vec![]
                 } else if to_execute.len() > self.threadpool.max_count() {
-                    let independent_systems = Self::lift_independent(to_execute.into_iter())
+                    Self::lift_independent(to_execute.into_iter())
                         .map(|systems| {
                             systems.into_iter().map(|(stored_system, system_id)| {
                                 (system_id, stored_system.ordering())
                             }).collect::<Vec<_>>()
-                        });
-                    
-                    independent_systems
-                        .into_iter()
+                        })
                         .map(|systems| tokio::sync::RwLock::new(ExecutionGraph::new(&systems)))
                         .collect()
                 } else {
                     let systems = to_execute.into_iter().map(|(system_id, stored_system)| {
                         (system_id, stored_system.ordering())  
                     }).collect::<Vec<_>>();
-    
+
                     vec![
                         tokio::sync::RwLock::new(ExecutionGraph::new(&systems))
                     ]
@@ -433,6 +448,7 @@ impl Scheduler {
                     event!(Level::WARN, system_id = ?system_id, system_result = ?system_result);
 
                     match system_result {
+                        SystemResult::Success => {},
                         SystemResult::Error(error) => {
                             panic!("{}", error)
                         }
@@ -816,7 +832,7 @@ impl Scheduler {
 
                                                         match inner {
                                                             InnerStoredSystem::Sync(system) => {
-                                                                //println!("System Running: {:?}", ids.read().unwrap().get(system_id.id()));
+                                                                println!("System Running: {:?}", ids.read().unwrap().get(system_id.id()));
                                                                 if let Some(result) = unsafe { system.run(
                                                                     &scheduler_resource_map, 
                                                                     system_resource_map_ptrs.get(&system_id), 
@@ -830,10 +846,10 @@ impl Scheduler {
                                                                 *status = SystemStatus::Executed;
                                                                 current_graph.write().await.mark_as_complete(&system_id);
                                                                 accesses.write().await.remove(&system_id);
-                                                                // println!("System Finished: {:?}", ids.read().unwrap().get(&system_id));
+                                                                println!("System Finished: {:?}", ids.read().unwrap().get(system_id.id()));
                                                             },
                                                             InnerStoredSystem::Async(system) => {
-                                                                // println!("System Running: {:?}", ids.read().unwrap().get(&system_id));
+                                                                println!("System Running: {:?}", ids.read().unwrap().get(system_id.id()));
                                                                 let mut task = unsafe { system.run(
                                                                     &scheduler_resource_map, 
                                                                     system_resource_map_ptrs.get(&system_id), 
@@ -863,7 +879,7 @@ impl Scheduler {
                                                                         
                                                                         accesses.write().await.remove(&system_id);
 
-                                                                        // println!("System Finished: {:?}", ids.read().unwrap().get(&system_id));
+                                                                        println!("System Finished: {:?}", ids.read().unwrap().get(system_id.id()));
                                                                     }
                                                                 }
                                                             }
@@ -912,6 +928,8 @@ impl Scheduler {
                                             *system.status().lock().unwrap() = SystemStatus::Executed;
                                             execution_graphs.get(graph_number).unwrap().write().await.mark_as_complete(&system_id);
                                             accesses.write().await.remove(&system_id);
+
+                                            println!("System Finished: {:?}", ids.read().unwrap().get(system_id.id()));
                                         }
                                     }
                                 }

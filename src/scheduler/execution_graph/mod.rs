@@ -687,4 +687,69 @@ mod execution_graph {
         assert_eq!(leaves, HashSet::from([c]));
         graph.mark_as_complete(&c);
     }
+
+    #[test]
+    fn foo() {
+        let a = 1;
+        let b = 2;
+        let c = 3;
+        let d = 4;
+        let e = 5;
+
+        let ao = Ordering {
+            before: HashSet::from([b]),
+            after: HashSet::from([]),
+            priority: 0.0
+        };
+
+        let bo = Ordering {
+            before: HashSet::from([]),
+            after: HashSet::from([]),
+            priority: 0.0
+        };
+
+        let co = Ordering {
+            before: HashSet::from([]),
+            after: HashSet::from([b]),
+            priority: 0.0
+        };
+
+        let dor = Ordering {
+            before: HashSet::from([]),
+            after: HashSet::from([b]),
+            priority: 0.0
+        };
+
+        let eo = Ordering {
+            before: HashSet::from([]),
+            after: HashSet::from([c]),
+            priority: 0.0
+        };
+
+        let input = vec![
+            (b, &bo),
+            (a, &ao),
+            (c, &co),
+            (d, &dor),
+            (e, &eo)
+        ];
+
+        let mut graph = ExecutionGraph::new(&input);
+
+        let leaves = graph.leaves().map(|(leaf, _)| leaf).cloned().collect::<HashSet<_>>();
+        assert_eq!(leaves, HashSet::from([a]));
+        graph.mark_as_complete(&a);
+        let leaves = graph.leaves().map(|(leaf, _)| leaf).cloned().collect::<HashSet<_>>();
+        assert_eq!(leaves, HashSet::from([b]));
+        graph.mark_as_complete(&b);
+        let leaves = graph.leaves().map(|(leaf, _)| leaf).cloned().collect::<HashSet<_>>();
+        assert_eq!(leaves, HashSet::from([c, d]));
+        graph.mark_as_complete(&c);
+        graph.mark_as_complete(&d);
+        let leaves = graph.leaves().map(|(leaf, _)| leaf).cloned().collect::<HashSet<_>>();
+        assert_eq!(leaves, HashSet::from([e]));
+        graph.mark_as_complete(&e);
+        
+        assert_eq!(graph.leaves().collect::<Vec<_>>().len(), 0);
+    }
 }
