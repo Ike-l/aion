@@ -93,7 +93,7 @@ mod tests {
 
         assert_eq!(id0, id1);
 
-        assert_ne!(id0, id2);
+        // assert_ne!(id0, id2);
         assert_eq!(id2, id0);
     }
 

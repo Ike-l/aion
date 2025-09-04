@@ -4,6 +4,7 @@ use crate::scheduler::execution_graph::{node::Node, ordering::ExecutionOrdering}
 
 pub mod ordering;
 pub mod node;
+pub mod panic_safe_graphs;
 
 pub struct ExecutionGraph<T> {
     finished: AtomicBool,
@@ -12,7 +13,7 @@ pub struct ExecutionGraph<T> {
     // Need Not Bool because async functions would be constantly thrashed around by threads trying to "mark_as_complete" it- only one thread should be able to and that thread has the components
     // so i can eliminate "pending" from "leaves"
     // cant just say its finished because 1. Doesnt make sense- its not finished, and 2. Would pre-emptively finish the graph
-    current_flow: HashMap<T, (AtomicUsize, AtomicU8)>
+    current_flow: HashMap<T, (AtomicUsize, AtomicU8)>,
 }
 
 impl<T> ExecutionGraph<T> {
@@ -24,7 +25,7 @@ impl<T> ExecutionGraph<T> {
         Self {
             finished: AtomicBool::new(true),
             nodes: HashMap::new(),
-            current_flow: HashMap::new()
+            current_flow: HashMap::new(),
         }
     }
 
@@ -89,7 +90,7 @@ impl<T> ExecutionGraph<T> where T: Eq + Hash + Clone {
         Self {
             finished: AtomicBool::new(false),
             nodes,
-            current_flow
+            current_flow,
         }
     }
 

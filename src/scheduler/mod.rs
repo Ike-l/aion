@@ -2,7 +2,7 @@ use std::{any::TypeId, collections::{HashMap, HashSet}, sync::{atomic::{AtomicUs
 
 use tracing::{event, Level};
 
-use crate::{id::Id, parameters::injections::{owned::Owned, shared::Shared, unique::Unique}, scheduler::{accesses::{access::Access, access_map::AccessMap}, blacklists::Blacklists, events::{CurrentEvents, NewEvents}, execution_graph::{ordering::SchedulerOrdering, ExecutionGraph}, interrupts::{CurrentInterrupts, NewInterrupts}, phase::Phase, resources::{new_resources::NewResources, resource_map::{access_checked_resource_map::AccessCheckedResourceMap, ResourceMap}, system_resource::{system_resource_ptr::SystemResourcePtr, SystemResource}, Resource}, system_event::{SystemEvent, SystemResult}, tick::{current_tick::{tick_incrementor, CurrentTick}, lifetime::Lifetime, Tick}}, systems::{async_system::waker::DummyWaker, stored_system::{inner_stored_system::InnerStoredSystem, Criteria, StoredSystem}, system_cell::SystemCell, system_flag::SystemFlag, system_status::SystemStatus}};
+use crate::{id::Id, parameters::injections::{owned::Owned, shared::Shared, unique::Unique}, scheduler::{accesses::{access::Access, access_map::AccessMap}, blacklists::Blacklists, events::{CurrentEvents, NewEvents}, execution_graph::{ordering::SchedulerOrdering, panic_safe_graphs::PanicSafeGraphs, ExecutionGraph}, interrupts::{CurrentInterrupts, NewInterrupts}, phase::Phase, resources::{new_resources::NewResources, resource_map::{access_checked_resource_map::AccessCheckedResourceMap, ResourceMap}, system_resource::{system_resource_ptr::SystemResourcePtr, SystemResource}, Resource}, system_event::{SystemEvent, SystemResult}, tick::{current_tick::{tick_incrementor, CurrentTick}, lifetime::Lifetime, Tick}}, systems::{async_system::waker::DummyWaker, stored_system::{inner_stored_system::InnerStoredSystem, Criteria, StoredSystem}, system_cell::SystemCell, system_flag::SystemFlag, system_status::SystemStatus}};
 
 pub mod accesses;
 pub mod resources;
@@ -435,7 +435,7 @@ impl Scheduler {
                     &self.resources,
                     &self.system_resources,
                     &self.ids,
-                    Arc::new(execution_graphs),
+                    PanicSafeGraphs::new(Arc::new(execution_graphs)),
                     &self.background_accesses,
                     &self.threadpool
                 );
@@ -716,13 +716,13 @@ impl Scheduler {
         scheduler_resource_map: &Arc<parking_lot::RwLock<ResourceMap>>,
         system_resource_maps: &Arc<HashMap<Id, Arc<SystemResource>>>,
         ids: &Arc<RwLock<HashMap<u64, String>>>,
-        execution_graphs: Arc<Vec<tokio::sync::RwLock<ExecutionGraph<Id>>>>,
+        execution_graphs: PanicSafeGraphs<Id>,
         accesses: &Arc<tokio::sync::RwLock<HashMap<Id, AccessMap>>>,
         threadpool: &threadpool::ThreadPool,
     ) -> (HashMap<Id, StoredSystem>, Vec<(Id, SystemResult)>) {
         let errors = Arc::new(tokio::sync::Mutex::new(Vec::new()));
 
-        let graph_count = execution_graphs.len();
+        let graph_count = execution_graphs.graphs.len();
         // Each graph is responsible for decrementing this. When 0 all are finished
         let finished = Arc::new(AtomicUsize::new(graph_count));
 
@@ -751,7 +751,7 @@ impl Scheduler {
             let start_graph = (i * graph_count) / threadpool.max_count();
 
             let finished = Arc::clone(&finished);
-            let execution_graphs = Arc::clone(&execution_graphs);
+            let execution_graphs = execution_graphs.arc_clone();
             let accesses = Arc::clone(&accesses);
             let scheduler_resource_map = Arc::clone(scheduler_resource_map);
             let system_resource_maps = Arc::clone(system_resource_maps);
@@ -773,7 +773,7 @@ impl Scheduler {
                         let mut current_graph_index = start_graph;
 
                         while finished.load(Ordering::Acquire) > 0 {
-                            let current_graph = execution_graphs.get(current_graph_index).unwrap();
+                            let current_graph = execution_graphs.graphs.get(current_graph_index).unwrap();
 
                             // chain is the count of how many systems were "passed"
                             //  reasons: another thread is handling it, there are access conflicts, its pending and not done
@@ -833,15 +833,18 @@ impl Scheduler {
                                                         match inner {
                                                             InnerStoredSystem::Sync(system) => {
                                                                 println!("System Running: {:?}", ids.read().unwrap().get(system_id.id()));
-                                                                if let Some(result) = unsafe { system.run(
-                                                                    &scheduler_resource_map, 
-                                                                    system_resource_map_ptrs.get(&system_id), 
-                                                                    system_id.clone(), 
-                                                                    Arc::clone(&ids), 
-                                                                    Some(&system_resource_maps)
-                                                                ) } {
+                                                                let result = unsafe { system.run(
+                                                                        &scheduler_resource_map, 
+                                                                        system_resource_map_ptrs.get(&system_id), 
+                                                                        system_id.clone(), 
+                                                                        Arc::clone(&ids), 
+                                                                        Some(&system_resource_maps)
+                                                                ) };
+
+                                                                if let Some(result) = result {
                                                                     errors.lock().await.push((system_id.clone(), result));
                                                                 }
+
 
                                                                 *status = SystemStatus::Executed;
                                                                 current_graph.write().await.mark_as_complete(&system_id);
@@ -851,11 +854,11 @@ impl Scheduler {
                                                             InnerStoredSystem::Async(system) => {
                                                                 println!("System Running: {:?}", ids.read().unwrap().get(system_id.id()));
                                                                 let mut task = unsafe { system.run(
-                                                                    &scheduler_resource_map, 
-                                                                    system_resource_map_ptrs.get(&system_id), 
-                                                                    system_id.clone(), 
-                                                                    Arc::clone(&ids), 
-                                                                    Some(&system_resource_maps)
+                                                                        &scheduler_resource_map, 
+                                                                        system_resource_map_ptrs.get(&system_id), 
+                                                                        system_id.clone(), 
+                                                                        Arc::clone(&ids), 
+                                                                        Some(&system_resource_maps)
                                                                 ) };
 
                                                                 match task.as_mut().poll(&mut context) {
@@ -889,7 +892,7 @@ impl Scheduler {
                                                     },
                                                     SystemStatus::Pending => chain += 1,
                                                     SystemStatus::Executed => { /* Somehow possible but is benign :) */ },
-                                                    SystemStatus::Executing => { unreachable!("Somehow got a lock while another thread should be holding it") }
+                                                    SystemStatus::Executing => { unreachable!("Somehow got a lock while another thread should be holding it (possible if another thread panics)") }
                                                 }
                                             }
                                             Err(_err) => {
@@ -926,7 +929,7 @@ impl Scheduler {
                                             let system = systems.get(&system_id).unwrap();
 
                                             *system.status().lock().unwrap() = SystemStatus::Executed;
-                                            execution_graphs.get(graph_number).unwrap().write().await.mark_as_complete(&system_id);
+                                            execution_graphs.graphs.get(graph_number).unwrap().write().await.mark_as_complete(&system_id);
                                             accesses.write().await.remove(&system_id);
 
                                             println!("System Finished: {:?}", ids.read().unwrap().get(system_id.id()));
@@ -941,11 +944,21 @@ impl Scheduler {
                         }
                     });
                 }
-            )
+            );
         }
 
-        threadpool.join();
+        while execution_graphs.drop_signal.load(Ordering::SeqCst) < threadpool.max_count() {
+            if execution_graphs.panicked_signal.load(Ordering::SeqCst) {
+                panic!("A Scheduler thread has panicked. Choosing to panic the main thread");
+            }
 
+            std::hint::spin_loop();
+        }
+
+        // the above is functionally the same
+        // threadpool.join();
+
+        
         let mut systems = Arc::try_unwrap(hollow_systems).unwrap();
 
         for (system_id, system_cell) in Arc::try_unwrap(inner_stored_systems).unwrap() {
