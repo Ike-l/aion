@@ -1,7 +1,5 @@
 use std::{any::TypeId, collections::{HashMap, HashSet}, sync::{atomic::{AtomicUsize, Ordering}, Arc, RwLock, TryLockError}, task::{Context, Poll, Waker}, thread::JoinHandle};
 
-use tracing::{event, Level};
-
 use crate::{id::Id, parameters::injections::{owned::Owned, shared::Shared, unique::Unique}, scheduler::{accesses::{access::Access, access_map::AccessMap}, blacklists::Blacklists, events::{CurrentEvents, NewEvents}, execution_graph::{ordering::SchedulerOrdering, panic_safe_graphs::PanicSafeGraphs, ExecutionGraph}, interrupts::{CurrentInterrupts, NewInterrupts}, phase::Phase, resources::{new_resources::NewResources, resource_map::{access_checked_resource_map::AccessCheckedResourceMap, ResourceMap}, system_resource::{system_resource_ptr::SystemResourcePtr, SystemResource}, Resource}, system_event::{SystemEvent, SystemResult}, tick::{current_tick::{tick_incrementor, CurrentTick}, lifetime::Lifetime, Tick}}, systems::{async_system::waker::DummyWaker, stored_system::{inner_stored_system::InnerStoredSystem, Criteria, StoredSystem}, system_cell::SystemCell, system_flag::SystemFlag, system_status::SystemStatus}};
 
 pub mod accesses;
@@ -31,6 +29,7 @@ pub struct Scheduler {
     bubbles: Vec<(Lifetime, String, fn(&HashSet<Id>) -> bool)>,
     bubble_echoes: Vec<(Lifetime, (Lifetime, String, fn(&HashSet<Id>) -> bool))>,
     catfishes: Vec<(Id, Id)>,
+    delayed_events: Vec<(Id, usize)>,
 
     default_systems: Vec<Id>,
     
@@ -38,13 +37,15 @@ pub struct Scheduler {
 
     background_accesses: Arc<tokio::sync::RwLock<HashMap<Id, AccessMap>>>,
 
-    threadpool: threadpool::ThreadPool
+    threadpool: threadpool::ThreadPool,
+
+    pub debug_info: bool
 }
 
 // Default needed to uphold safety
 impl Default for Scheduler {
     fn default() -> Self {
-        let mut scheduler = Self::new_empty(8);
+        let mut scheduler = Self::new_empty(1);
 
         let tick_id = scheduler.insert_system(
             "Standard Tick Accumulator".to_string(),
@@ -115,10 +116,12 @@ impl Scheduler {
             bubbles: Vec::new(),
             bubble_echoes: Vec::new(),
             catfishes: Vec::new(),
+            delayed_events: Vec::new(),
             default_systems: Vec::new(),
             current_background_systems: Vec::new(),
             background_accesses: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
-            threadpool: threadpool::Builder::new().thread_name("Scheduler's Execution Thread".to_string()).num_threads(threads).build()
+            threadpool: threadpool::Builder::new().thread_name("Scheduler's Execution Thread".to_string()).num_threads(threads).build(),
+            debug_info: true
         }
     }
 
@@ -140,6 +143,16 @@ impl Scheduler {
         None
     }
 
+    pub fn set_num_threads(&mut self, threads: usize) -> bool {
+        if threads == 0 {
+            return false
+        }
+
+        self.threadpool.set_num_threads(threads);
+        
+        true
+    }
+
     pub fn current_tick(&self) -> Tick {
         // Safety:
         // Is `copy` so doesnt `access` per se
@@ -152,6 +165,7 @@ impl Scheduler {
         system: InnerStoredSystem,
         wake_up_criteria: F,
         ordering: SchedulerOrdering,
+        // mut for debug and test builds
         mut flags: HashSet<SystemFlag>,  
         phase: Option<Phase>,      
     ) -> Id 
@@ -235,6 +249,10 @@ impl Scheduler {
         unsafe { self.resources.read().resolve::<Unique<NewEvents>>().unwrap().insert(event.into()) };
     }
 
+    pub fn insert_new_delayed_event<T: Into<Id>>(&mut self, event: T, delay: usize) {
+        self.delayed_events.push((event.into(), delay))
+    }
+
     pub fn remove_new_event<T: Into<Id>>(&mut self, event: T) {
         // Safety:
         // Uses locks internally so multiple access is fine
@@ -272,6 +290,15 @@ impl Scheduler {
     }
 
     pub fn tick(&mut self) {
+        for index in self.delayed_events.iter().enumerate().rev().filter_map(|(index, (_, delay))| if *delay == 0 { Some(index) } else { None }).collect::<Vec<_>>() {
+            let (event, _) = self.delayed_events.remove(index);
+            self.insert_new_event(event);
+        }
+        
+        for (_, delay) in self.delayed_events.iter_mut() {
+            *delay -= 1;
+        }
+
         let mut phases = Phase::iter_fields();
         // Safety:
         // Uses locks internally
@@ -279,7 +306,7 @@ impl Scheduler {
             let phase = phases.next().unwrap();
             assert_eq!(phase, Phase::Ticking);
 
-            event!(Level::INFO, phase = ?phase, "Executing Scheduler Phase: {:?}", phase);
+            // event!(Level::INFO, phase = ?phase, "Executing Scheduler Phase: {:?}", phase);
             let resource_guard = self.resources.read();
 
 
@@ -316,8 +343,8 @@ impl Scheduler {
         // skip `Ticking`, take `PreProcessing, Processing, PostProcessing`
         for _ in 0..3 {
             let phase = phases.next().unwrap();
-            println!("Executing phase: {phase:?}");
-            event!(Level::INFO, phase = ?phase, "Executing Scheduler Phase: {phase:?}");
+            if self.debug_info { println!("Executing phase: {phase:?}"); }
+            // event!(Level::INFO, phase = ?phase, "Executing Scheduler Phase: {phase:?}");
 
             let (execution_graphs, running_systems, bubbles) = {
                 let resource_guard = self.resources.read();
@@ -430,6 +457,7 @@ impl Scheduler {
                 }
                 // for system in bubbles that are triggered create new event
 
+                
                 let (systems, errors) = Self::execute_graphs(
                     self.systems.take().unwrap(),
                     &self.resources,
@@ -437,20 +465,22 @@ impl Scheduler {
                     &self.ids,
                     PanicSafeGraphs::new(Arc::new(execution_graphs)),
                     &self.background_accesses,
-                    &self.threadpool
+                    &self.threadpool,
+                    Arc::new(self.debug_info)
                 );
 
                 for (system_id, system_result) in errors {
-                    if systems.get(&system_id).unwrap().flags().contains(&SystemFlag::Succeeds) {
-                        panic!("{:?}", system_result);
-                    }
-
-                    event!(Level::WARN, system_id = ?system_id, system_result = ?system_result);
+                    // event!(Level::WARN, system_id = ?system_id, system_result = ?system_result);
 
                     match system_result {
-                        SystemResult::Success => {},
+                        SystemResult::Success => {
+                        },
                         SystemResult::Error(error) => {
-                            panic!("{}", error)
+                            if systems.get(&system_id).unwrap().flags().contains(&SystemFlag::Succeeds) {
+                                panic!("{error}")
+                            } else {
+                                println!("{error}")
+                            }
                         }
                         SystemResult::SystemEvent(event) => {
                             match event {
@@ -470,6 +500,22 @@ impl Scheduler {
                                     };
                 
                                     self.insert_new_event(new_event);
+                                },
+                                SystemEvent::Event(event) => {
+                                    let new_event = Id::from(event.as_str());
+                                    self.insert_new_event(new_event);
+                                },
+                                SystemEvent::DelayedEvent(event, delay) => {
+                                    let new_event = Id::from(event.as_str());
+                                    self.insert_new_delayed_event(new_event, delay);
+                                },
+                                SystemEvent::DelayedSignalEvent(signal, delay) => {
+                                    let new_event = {
+                                        let ids = self.ids.read().unwrap();
+                                        Id::from(format!("{}{signal}", ids.get(system_id.id()).unwrap()).as_str())
+                                    };
+                
+                                    self.insert_new_delayed_event(new_event, delay);
                                 }
                             }
                         }
@@ -490,11 +536,11 @@ impl Scheduler {
             let phase = phases.next().unwrap();
             assert_eq!(phase, Phase::BackgroundEnd);
 
-            event!(Level::INFO, phase = ?phase, "Executing Scheduler Phase: {:?}", phase);
+            // event!(Level::INFO, phase = ?phase, "Executing Scheduler Phase: {:?}", phase);
             let mut retain = Vec::new();
             for (system_id, join_handle) in self.current_background_systems.drain(..).collect::<Vec<_>>() {
                 if join_handle.is_finished() {
-                    println!("System Finished: {:?}", self.ids.read().unwrap().get(system_id.id()));
+                    if self.debug_info { println!("<---- System Finished: {:?}", self.ids.read().unwrap().get(system_id.id())); }
 
                     let system = self.systems.as_mut().unwrap().get_mut(&system_id).unwrap();
     
@@ -519,7 +565,7 @@ impl Scheduler {
             let phase = phases.next().unwrap();
             assert_eq!(phase, Phase::BackgroundStart);
 
-            event!(Level::INFO, phase = ?phase, "Executing Scheduler Phase: {:?}", phase);
+            // event!(Level::INFO, phase = ?phase, "Executing Scheduler Phase: {:?}", phase);
             let to_execute = {
                 let resource_guard = self.resources.read();
                 
@@ -612,6 +658,7 @@ impl Scheduler {
                                         let scheduler_resource_map = Arc::clone(&self.resources);
                                         let ids = Arc::clone(&self.ids);
                                         let system_resource_maps = Arc::clone(&self.system_resources);
+                                        let debug_info = self.debug_info;
 
                                         self.current_background_systems.push((
                                             system_id.clone(),
@@ -620,7 +667,7 @@ impl Scheduler {
                                                 let system_resource_map = SystemResourcePtr::new(Arc::clone(system_resource_maps.get(&system_id).unwrap())).unwrap();
                                                 drop(system_resource_maps);
                                                 if let InnerStoredSystem::Sync(sys) = &mut inner {
-                                                    // println!("System Running: {:?}", ids.read().unwrap().get(&system_id));
+                                                    if debug_info { println!("----> System Running: {:?}", ids.read().unwrap().get(system_id.id())); }
                                                     unsafe { sys.run(
                                                         &scheduler_resource_map, 
                                                         Some(&system_resource_map),
@@ -657,7 +704,7 @@ impl Scheduler {
             let phase = phases.next().unwrap();
             assert_eq!(phase, Phase::Movement);
 
-            event!(Level::INFO, phase = ?phase, "Executing Scheduler Phase: {:?}", phase);
+            // event!(Level::INFO, phase = ?phase, "Executing Scheduler Phase: {:?}", phase);
             let resources = self.resources.read();
             // Safety:
             // Uses locks internally
@@ -682,8 +729,16 @@ impl Scheduler {
             let mut current_set = HashSet::new();
             
             current_set.insert(system_id.clone());
+
             current_set.extend(system.ordering().before.clone());
             current_set.extend(system.ordering().after.clone());
+
+            // todo
+            // This might fix a bug:
+            // restrict the system orderings to only those in the systems
+            // to implement bug fix:
+            // collect ids.
+            // only take the union of the system orderings with this set of ids.
 
             let mut dependent_sets = Vec::new();
             for (i, set) in independent.iter().enumerate() {
@@ -693,7 +748,7 @@ impl Scheduler {
                 }
             }
 
-            for i in dependent_sets {
+            for i in dependent_sets.into_iter().rev() {
                 let set = independent.remove(i);
                 current_set.extend(set);
             }
@@ -703,12 +758,26 @@ impl Scheduler {
             system_mapping.insert(system_id, system);
         }
 
-        independent.into_iter().map(move |v| {
-            v.into_iter().fold(Vec::new(), |mut acc, cur| {
-                acc.push((system_mapping.remove(&cur).unwrap(), cur));
-                acc
-            })
-        })
+        // println!("system_mapping: {:?}", system_mapping.len());
+        let mut systems = Vec::new();
+        for ids in independent {
+            let mut current_systems = Vec::new();
+            for id in ids {
+                if let Some(system) = system_mapping.remove(&id) {
+                    current_systems.push((system, id));
+                }
+            }
+
+            systems.push(current_systems);
+        }
+
+        systems.into_iter()
+        // independent.into_iter().map(move |v| {
+        //     v.into_iter().fold(Vec::new(), |mut acc, cur| {
+        //         acc.push((system_mapping.remove(&cur).unwrap(), cur));
+        //         acc
+        //     })
+        // })
     }
 
     pub fn execute_graphs(
@@ -719,6 +788,7 @@ impl Scheduler {
         execution_graphs: PanicSafeGraphs<Id>,
         accesses: &Arc<tokio::sync::RwLock<HashMap<Id, AccessMap>>>,
         threadpool: &threadpool::ThreadPool,
+        debug_info: Arc<bool>,
     ) -> (HashMap<Id, StoredSystem>, Vec<(Id, SystemResult)>) {
         let errors = Arc::new(tokio::sync::Mutex::new(Vec::new()));
 
@@ -745,7 +815,8 @@ impl Scheduler {
 
 
         let hollow_systems = Arc::new(systems);
-
+        
+        let runtime = Arc::new(tokio::runtime::Runtime::new().unwrap());
         for i in 0..threadpool.max_count() {
             // trial-and-errored this formula in rust playground
             let start_graph = (i * graph_count) / threadpool.max_count();
@@ -760,11 +831,13 @@ impl Scheduler {
             let systems = Arc::clone(&hollow_systems);
             let system_resource_map_ptrs = Arc::clone(&system_resource_map_ptrs);
             let errors = Arc::clone(&errors);
-            
+            let debug_info = Arc::clone(&debug_info);
+            let runtime = Arc::clone(&runtime);
+
             threadpool.execute(
                 move || {
                     let scheduler_resource_map = scheduler_resource_map.read_arc();
-                    let runtime = tokio::runtime::Runtime::new().unwrap();
+                    
                     runtime.block_on(async move {
                         let waker = Waker::from(Arc::new(DummyWaker));
                         let mut context = Context::from_waker(&waker);
@@ -832,7 +905,7 @@ impl Scheduler {
 
                                                         match inner {
                                                             InnerStoredSystem::Sync(system) => {
-                                                                println!("System Running: {:?}", ids.read().unwrap().get(system_id.id()));
+                                                                if *debug_info { println!("----> System Running: {:?}", ids.read().unwrap().get(system_id.id())); }
                                                                 let result = unsafe { system.run(
                                                                         &scheduler_resource_map, 
                                                                         system_resource_map_ptrs.get(&system_id), 
@@ -849,10 +922,10 @@ impl Scheduler {
                                                                 *status = SystemStatus::Executed;
                                                                 current_graph.write().await.mark_as_complete(&system_id);
                                                                 accesses.write().await.remove(&system_id);
-                                                                println!("System Finished: {:?}", ids.read().unwrap().get(system_id.id()));
+                                                                if *debug_info { println!("<---- System Finished: {:?}", ids.read().unwrap().get(system_id.id())); }
                                                             },
                                                             InnerStoredSystem::Async(system) => {
-                                                                println!("System Running: {:?}", ids.read().unwrap().get(system_id.id()));
+                                                                if *debug_info { println!("----> System Running: {:?}", ids.read().unwrap().get(system_id.id())); }
                                                                 let mut task = unsafe { system.run(
                                                                         &scheduler_resource_map, 
                                                                         system_resource_map_ptrs.get(&system_id), 
@@ -882,7 +955,7 @@ impl Scheduler {
                                                                         
                                                                         accesses.write().await.remove(&system_id);
 
-                                                                        println!("System Finished: {:?}", ids.read().unwrap().get(system_id.id()));
+                                                                        if *debug_info { println!("<---- System Finished: {:?}", ids.read().unwrap().get(system_id.id())); }
                                                                     }
                                                                 }
                                                             }
@@ -932,7 +1005,7 @@ impl Scheduler {
                                             execution_graphs.graphs.get(graph_number).unwrap().write().await.mark_as_complete(&system_id);
                                             accesses.write().await.remove(&system_id);
 
-                                            println!("System Finished: {:?}", ids.read().unwrap().get(system_id.id()));
+                                            if *debug_info { println!("<---- System Finished: {:?}", ids.read().unwrap().get(system_id.id())); }
                                         }
                                     }
                                 }
@@ -945,6 +1018,7 @@ impl Scheduler {
                     });
                 }
             );
+            
         }
 
         while execution_graphs.drop_signal.load(Ordering::SeqCst) < threadpool.max_count() {
@@ -956,7 +1030,7 @@ impl Scheduler {
         }
 
         // the above is functionally the same
-        // threadpool.join();
+        threadpool.join();
 
         
         let mut systems = Arc::try_unwrap(hollow_systems).unwrap();
