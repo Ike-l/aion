@@ -3,7 +3,7 @@ use std::sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, Arc};
 use crate::scheduler::execution_graph::ExecutionGraph;
 
 pub struct PanicSafeGraphs<T> {
-    pub drop_signal: Arc<AtomicUsize>,
+    pub drop_signals: Arc<AtomicUsize>,
     pub panicked_signal: Arc<AtomicBool>,
     pub graphs: Arc<Vec<tokio::sync::RwLock<ExecutionGraph<T>>>>
 }
@@ -11,7 +11,7 @@ pub struct PanicSafeGraphs<T> {
 impl<T> PanicSafeGraphs<T> {
     pub fn new(graphs: Arc<Vec<tokio::sync::RwLock<ExecutionGraph<T>>>>) -> Self {
         Self {
-            drop_signal: Arc::new(AtomicUsize::new(0)),
+            drop_signals: Arc::new(AtomicUsize::new(0)),
             panicked_signal: Arc::new(AtomicBool::new(false)),
             graphs
         }
@@ -19,7 +19,7 @@ impl<T> PanicSafeGraphs<T> {
 
     pub fn arc_clone(&self) -> Self {
         Self {
-            drop_signal: Arc::clone(&self.drop_signal),
+            drop_signals: Arc::clone(&self.drop_signals),
             panicked_signal: Arc::clone(&self.panicked_signal),
             graphs: Arc::clone(&self.graphs)
         }
@@ -31,7 +31,7 @@ impl<T> Drop for PanicSafeGraphs<T> {
         if std::thread::panicking() {
             self.panicked_signal.store(true, Ordering::SeqCst);
         } else {
-            self.drop_signal.fetch_add(1, Ordering::SeqCst);
+            self.drop_signals.fetch_add(1, Ordering::SeqCst);
         }
     }
 }

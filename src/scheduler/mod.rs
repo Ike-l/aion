@@ -1,6 +1,6 @@
 use std::{any::TypeId, collections::{HashMap, HashSet}, sync::{atomic::{AtomicUsize, Ordering}, Arc, RwLock, TryLockError}, task::{Context, Poll, Waker}, thread::JoinHandle};
 
-use crate::{id::Id, parameters::injections::{owned::Owned, shared::Shared, unique::Unique}, scheduler::{accesses::{access::Access, access_map::AccessMap}, blacklists::Blacklists, events::{CurrentEvents, NewEvents}, execution_graph::{ordering::SchedulerOrdering, panic_safe_graphs::PanicSafeGraphs, ExecutionGraph}, interrupts::{CurrentInterrupts, NewInterrupts}, phase::Phase, resources::{new_resources::NewResources, resource_map::{access_checked_resource_map::AccessCheckedResourceMap, ResourceMap}, system_resource::{system_resource_ptr::SystemResourcePtr, SystemResource}, Resource}, system_event::{SystemEvent, SystemResult}, tick::{current_tick::{tick_incrementor, CurrentTick}, lifetime::Lifetime, Tick}}, systems::{async_system::waker::DummyWaker, stored_system::{inner_stored_system::InnerStoredSystem, Criteria, StoredSystem}, system_cell::SystemCell, system_flag::SystemFlag, system_status::SystemStatus}};
+use crate::{id::Id, parameters::injections::{owned::Owned, shared::Shared, unique::Unique}, scheduler::{accesses::{access::Access, access_map::AccessMap}, blacklists::Blacklists, events::{CurrentEvents, NewEvents}, execution_graph::{ordering::SchedulerOrdering, panic_safe_graphs::PanicSafeGraphs, ExecutionGraph}, interrupts::{CurrentInterrupts, NewInterrupts}, phase::Phase, resources::{new_resources::NewResources, resource_map::{access_checked_resource_map::AccessCheckedResourceMap, ResourceMap}, system_resource::{system_resource_ptr::SystemResourcePtr, SystemResource}, Resource}, system_event::{SystemEvent, SystemResult}, tick::{current_tick::{tick_incrementor, CurrentTick}, lifetime::Lifetime, Tick}, tick_future::TickFuture}, systems::{async_system::waker::DummyWaker, stored_system::{inner_stored_system::InnerStoredSystem, Criteria, StoredSystem}, system_cell::SystemCell, system_flag::SystemFlag, system_status::SystemStatus}};
 
 pub mod accesses;
 pub mod resources;
@@ -13,6 +13,7 @@ pub mod interrupts;
 pub mod events;
 pub mod phase;
 pub mod builder;
+pub mod tick_future;
 
 
 #[derive(Debug)]
@@ -289,7 +290,7 @@ impl Scheduler {
         self.conservatively_insert_auto(T::default())
     }
 
-    pub fn tick(&mut self) {
+    pub async fn tick(&mut self) {
         for index in self.delayed_events.iter().enumerate().rev().filter_map(|(index, (_, delay))| if *delay == 0 { Some(index) } else { None }).collect::<Vec<_>>() {
             let (event, _) = self.delayed_events.remove(index);
             self.insert_new_event(event);
@@ -467,7 +468,7 @@ impl Scheduler {
                     &self.background_accesses,
                     &self.threadpool,
                     Arc::new(self.debug_info)
-                );
+                ).await;
 
                 for (system_id, system_result) in errors {
                     // event!(Level::WARN, system_id = ?system_id, system_result = ?system_result);
@@ -485,14 +486,6 @@ impl Scheduler {
                         SystemResult::SystemEvent(event) => {
                             match event {
                                 SystemEvent::NoSystemEvent => self.remove_new_event::<Id>(system_id.clone().into()),
-                                // SystemEvent::FailSystemEvent => {
-                                //     let new_event = {
-                                //         let ids = self.ids.read().unwrap();
-                                //         Id::from(format!("{}Failed", ids.get(&system_id).unwrap()).as_str())
-                                //     };
-                
-                                //     self.insert_new_event(new_event);
-                                // }
                                 SystemEvent::SignalEvent(signal) => {
                                     let new_event = {
                                         let ids = self.ids.read().unwrap();
@@ -780,7 +773,7 @@ impl Scheduler {
         // })
     }
 
-    pub fn execute_graphs(
+    pub async fn execute_graphs(
         mut systems: HashMap<Id, StoredSystem>,
         scheduler_resource_map: &Arc<parking_lot::RwLock<ResourceMap>>,
         system_resource_maps: &Arc<HashMap<Id, Arc<SystemResource>>>,
@@ -794,7 +787,7 @@ impl Scheduler {
 
         let graph_count = execution_graphs.graphs.len();
         // Each graph is responsible for decrementing this. When 0 all are finished
-        let finished = Arc::new(AtomicUsize::new(graph_count));
+        let finished_graphs = Arc::new(AtomicUsize::new(graph_count));
 
         let system_resource_map_ptrs = Arc::new(system_resource_maps.iter().filter_map(|(system_id, resource_map)| {
             if *systems.get(system_id).unwrap().needs_system_resource() {
@@ -818,10 +811,8 @@ impl Scheduler {
         
         let runtime = Arc::new(tokio::runtime::Runtime::new().unwrap());
         for i in 0..threadpool.max_count() {
-            // trial-and-errored this formula in rust playground
+            let finished_graphs = Arc::clone(&finished_graphs);
             let start_graph = (i * graph_count) / threadpool.max_count();
-
-            let finished = Arc::clone(&finished);
             let execution_graphs = execution_graphs.arc_clone();
             let accesses = Arc::clone(&accesses);
             let scheduler_resource_map = Arc::clone(scheduler_resource_map);
@@ -845,7 +836,7 @@ impl Scheduler {
 
                         let mut current_graph_index = start_graph;
 
-                        while finished.load(Ordering::Acquire) > 0 {
+                        while finished_graphs.load(Ordering::Acquire) > 0 {
                             let current_graph = execution_graphs.graphs.get(current_graph_index).unwrap();
 
                             // chain is the count of how many systems were "passed"
@@ -979,7 +970,7 @@ impl Scheduler {
                                 } else {
                                     current_graph.write().await.finished().store(true, Ordering::Release);
 
-                                    let _ = finished.fetch_update(Ordering::SeqCst, Ordering::Relaxed, |finished| {
+                                    let _ = finished_graphs.fetch_update(Ordering::SeqCst, Ordering::Relaxed, |finished| {
                                         if finished == 0 {
                                             None
                                         } else {
@@ -1017,21 +1008,13 @@ impl Scheduler {
                         }
                     });
                 }
-            );
-            
+            );    
         }
 
-        while execution_graphs.drop_signal.load(Ordering::SeqCst) < threadpool.max_count() {
-            if execution_graphs.panicked_signal.load(Ordering::SeqCst) {
-                panic!("A Scheduler thread has panicked. Choosing to panic the main thread");
-            }
-
-            std::hint::spin_loop();
-        }
-
-        // the above is functionally the same
-        threadpool.join();
-
+        TickFuture {
+            threadpool: &threadpool,
+            execution_graphs: &execution_graphs
+        }.await;
         
         let mut systems = Arc::try_unwrap(hollow_systems).unwrap();
 
