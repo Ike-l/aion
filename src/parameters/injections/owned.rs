@@ -36,7 +36,7 @@ where
     }
 
     fn resolve_accesses(_accesses: &mut AccessMap) {
-        // No concurrent accesses since Owned (ToOwned)
+        // No active accesses since Owned (ToOwned)
     }
 
     fn criteria(owned_resources: &HashSet<TypeId>) -> bool {

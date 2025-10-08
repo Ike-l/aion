@@ -1,4 +1,4 @@
-use std::{any::{Any, TypeId}, collections::hash_map::Entry};
+use std::{any::{Any, TypeId}, collections::{hash_map::Entry, HashMap}};
 
 use anyhow::Context;
 
@@ -17,6 +17,10 @@ pub struct ResourceMap {
 impl ResourceMap {
     pub fn keys(&self) -> impl Iterator<Item = TypeId> {
         self.resources.get_map(&self.in_use).0.keys().cloned()
+    }
+
+    pub fn consume(self) -> HashMap<TypeId, Resource> {
+        self.resources.consume()
     }
 
     pub fn conservatively_insert<T: 'static>(&self, type_id: TypeId, resource: T) -> anyhow::Result<()> {

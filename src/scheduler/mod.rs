@@ -235,6 +235,11 @@ impl Scheduler {
     pub fn resources(&self) -> AccessCheckedResourceMap<'_> {
         AccessCheckedResourceMap::new(&self.resources, &self.background_accesses)
     }
+    
+    pub fn get_system_resource_map(&mut self, system_id: &Id) -> Option<SystemResourcePtr> {
+        let system = self.system_resources.get(system_id)?;
+        Some(SystemResourcePtr::new(Arc::clone(&system))?)
+    }
 
     pub fn resolve_owned<T, S>(&self) -> Option<Owned<T, S>> 
         where S: ToOwned<Owned = T> + 'static,
@@ -262,32 +267,51 @@ impl Scheduler {
 
     /// Safety:
     /// Ensure no reference alive when insert
-    pub unsafe fn insert<T: 'static>(&mut self, type_id: TypeId, resource: T) -> Option<Resource> {
-        unsafe { self.resources.write().insert(type_id, resource) }
+    pub unsafe fn insert<T: 'static>(&mut self, type_id: TypeId, resource: T, system: Option<&Id>) -> Option<Resource> {
+        if let Some(system_id) = system {
+            // Will fail if the map is the same as a background system
+            unsafe { Arc::get_mut(Arc::get_mut(&mut self.system_resources)?.get_mut(&system_id)?)?.insert(type_id, resource) }
+        } else {
+            unsafe { self.resources.write().insert(type_id, resource) }
+        }
     }
 
     /// Safety:
     /// Ensure no reference alive when insert
-    pub unsafe fn insert_auto<T: 'static>(&mut self, resource: T) -> Option<Resource> {
-        unsafe { self.insert(TypeId::of::<T>(), resource) }
+    pub unsafe fn insert_auto<T: 'static>(&mut self, resource: T, system: Option<&Id>) -> Option<Resource> {
+        unsafe { self.insert(TypeId::of::<T>(), resource, system) }
     }
 
     /// Safety:
     /// Ensure no reference alive when insert
-    pub unsafe fn insert_auto_default<T: 'static + Default>(&mut self) -> Option<Resource> {
-        unsafe { self.insert_auto(T::default()) }
+    pub unsafe fn insert_auto_default<T: 'static + Default>(&mut self, system: Option<&Id>) -> Option<Resource> {
+        unsafe { self.insert_auto(T::default(), system) }
     }
 
-    pub fn conservatively_insert<T: 'static>(&mut self, type_id: TypeId, resource: T) -> anyhow::Result<()> {
-        self.resources.read().conservatively_insert(type_id, resource)
+    pub fn conservatively_merge(&mut self, resource_map: ResourceMap, system: Option<&Id>) -> anyhow::Result<()> {
+        if let Some(system_id) = system.into() {
+            let system_resources = self.get_system_resource_map(system_id).ok_or(anyhow::Error::msg("Missing System Resources"))?;
+            system_resources.conservatively_merge(resource_map)
+        } else {
+            self.resources.read().conservatively_merge(resource_map)
+        }
     }
 
-    pub fn conservatively_insert_auto<T: 'static>(&mut self, resource: T) -> anyhow::Result<()> {
-        self.conservatively_insert(TypeId::of::<T>(), resource)
+    pub fn conservatively_insert<T: 'static>(&mut self, type_id: TypeId, resource: T, system: Option<&Id>) -> anyhow::Result<()> {
+        if let Some(system_id) = system {
+            let system_resources = self.get_system_resource_map(system_id).ok_or(anyhow::Error::msg("Missing System Resources"))?;
+            system_resources.conservatively_insert(type_id, resource)
+        } else {
+            self.resources.read().conservatively_insert(type_id, resource)
+        }
     }
 
-    pub fn conservatively_insert_auto_default<T: 'static + Default>(&mut self) -> anyhow::Result<()> {
-        self.conservatively_insert_auto(T::default())
+    pub fn conservatively_insert_auto<T: 'static>(&mut self, resource: T, system: Option<&Id>) -> anyhow::Result<()> {
+        self.conservatively_insert(TypeId::of::<T>(), resource, system)
+    }
+
+    pub fn conservatively_insert_auto_default<T: 'static + Default>(&mut self, system: Option<&Id>) -> anyhow::Result<()> {
+        self.conservatively_insert_auto(T::default(), system)
     }
 
     pub async fn tick(&mut self) {
@@ -698,16 +722,13 @@ impl Scheduler {
             assert_eq!(phase, Phase::Movement);
 
             // event!(Level::INFO, phase = ?phase, "Executing Scheduler Phase: {:?}", phase);
-            let resources = self.resources.read();
-            // Safety:
-            // Uses locks internally
-            let new_resources = unsafe { resources.resolve::<Unique<NewResources>>().unwrap().write().drain().collect::<HashMap<_, _>>() };
-            for (system_id, resource_map) in new_resources {
-                if let Some(system_id) = system_id {
-                    let _ = self.system_resources.get(&system_id).unwrap().conservatively_merge(resource_map);
-                } else {
-                    let _ = resources.conservatively_merge(resource_map);
-                }
+            for (system_id, resource_map) in {
+                let resources = self.resources.read();
+                // Safety:
+                // Uses locks internally
+                unsafe { resources.resolve::<Unique<NewResources>>().unwrap().write().drain().collect::<HashMap<_, _>>() }
+            } {
+                let _ = self.conservatively_merge(resource_map, system_id.as_ref());
             }
         }
     }
