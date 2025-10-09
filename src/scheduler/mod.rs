@@ -1,4 +1,4 @@
-use std::{any::TypeId, collections::{HashMap, HashSet}, sync::{atomic::{AtomicUsize, Ordering}, Arc, RwLock, TryLockError}, task::{Context, Poll, Waker}, thread::JoinHandle};
+use std::{any::TypeId, collections::{HashMap, HashSet}, sync::{atomic::{AtomicUsize, Ordering}, Arc, Mutex, RwLock, TryLockError}, task::{Context, Poll, Waker}, thread::JoinHandle};
 
 use crate::{id::Id, parameters::injections::{owned::Owned, shared::Shared, unique::Unique}, scheduler::{accesses::{access::Access, access_map::AccessMap}, blacklists::Blacklists, events::{CurrentEvents, NewEvents}, execution_graph::{ordering::SchedulerOrdering, panic_safe_graphs::PanicSafeGraphs, ExecutionGraph}, interrupts::{CurrentInterrupts, NewInterrupts}, phase::Phase, resources::{new_resources::NewResources, resource_map::{access_checked_resource_map::AccessCheckedResourceMap, ResourceMap}, system_resource::{system_resource_ptr::SystemResourcePtr, SystemResource}, Resource}, system_event::{SystemEvent, SystemResult}, tick::{current_tick::{tick_incrementor, CurrentTick}, lifetime::Lifetime, Tick}, tick_future::TickFuture}, systems::{async_system::waker::DummyWaker, stored_system::{inner_stored_system::InnerStoredSystem, Criteria, StoredSystem}, system_cell::SystemCell, system_flag::SystemFlag, system_status::SystemStatus}};
 
@@ -23,10 +23,11 @@ pub struct Scheduler {
     system_resources: Arc<HashMap<Id, Arc<SystemResource>>>,
 
     ids: Arc<RwLock<HashMap<u64, String>>>,
-    generations: HashMap<u64, u64>,
+    generations: Mutex<HashMap<u64, u64>>,
 
     systems: Option<HashMap<Id, StoredSystem>>,
 
+    // first lifetime is how long, next is the current accumulator
     bubbles: Vec<(Lifetime, String, fn(&HashSet<Id>) -> bool)>,
     bubble_echoes: Vec<(Lifetime, (Lifetime, String, fn(&HashSet<Id>) -> bool))>,
     catfishes: Vec<(Id, Id)>,
@@ -112,7 +113,7 @@ impl Scheduler {
             resources: Arc::new(parking_lot::RwLock::new(ResourceMap::default())),
             system_resources: Arc::new(HashMap::new()),
             ids: Arc::new(RwLock::new(HashMap::new())),
-            generations: HashMap::new(),
+            generations: Mutex::new(HashMap::new()),
             systems: Some(HashMap::new()),
             bubbles: Vec::new(),
             bubble_echoes: Vec::new(),
@@ -172,7 +173,7 @@ impl Scheduler {
     ) -> Id 
         where F: Fn(&HashSet<Id>) -> bool + Send + Sync + 'static
     {
-        let system_id = Id::new(display_name.as_str(), &mut self.generations);
+        let system_id = Id::new(display_name.as_str(), &mut self.generations.lock().unwrap());
         self.ids.write().unwrap().insert(system_id.id().clone(), display_name.clone());
 
         let wake_up_criteria: Box<dyn Fn(&HashSet<Id>) -> bool + Send + Sync> = if let Some(phase) = phase {
@@ -202,7 +203,7 @@ impl Scheduler {
         self.insert_bubble_column(Lifetime::new(self.current_tick(), Tick(1)), display_name, wake_up_criteria);
     }
 
-    /// Bubble exists for the lifetime
+    /// Acts as a Bubble for the entire duration of lifetime (a regular bubble is a bubble column with lifetime 1)
     pub fn insert_bubble_column(
         &mut self, 
         lifetime: Lifetime, 
@@ -212,7 +213,7 @@ impl Scheduler {
         self.bubbles.push((lifetime, display_name, wake_up_criteria));
     }
 
-    /// Bubble waits the lifetime 
+    /// Bubble Echo waits the lifetime and then becomes a bubble
     pub fn insert_bubble_echo(
         &mut self,
         echo_lifetime: Lifetime,
@@ -231,12 +232,16 @@ impl Scheduler {
     ) {
         self.catfishes.push((target_event, to_insert));
     }
-
-    pub fn resources(&self) -> AccessCheckedResourceMap<'_> {
-        AccessCheckedResourceMap::new(&self.resources, &self.background_accesses)
+    
+    /// Safety Doc:
+    /// Ensure drop of resources before drop of AccessCheckedResourceMap
+    pub unsafe fn resources(&self) -> AccessCheckedResourceMap<'_> {
+        AccessCheckedResourceMap::new(&self.resources, &self.background_accesses, Id::new(rand::random::<u64>(), &mut self.generations.lock().unwrap()))
     }
     
-    pub fn get_system_resource_map(&mut self, system_id: &Id) -> Option<SystemResourcePtr> {
+    /// Safety Doc:
+    /// Ensure drop of resources before drop of SystemResourcePtr
+    pub unsafe fn get_system_resource_map(&mut self, system_id: &Id) -> Option<SystemResourcePtr> {
         let system = self.system_resources.get(system_id)?;
         Some(SystemResourcePtr::new(Arc::clone(&system))?)
     }
@@ -290,7 +295,9 @@ impl Scheduler {
 
     pub fn conservatively_merge(&mut self, resource_map: ResourceMap, system: Option<&Id>) -> anyhow::Result<()> {
         if let Some(system_id) = system.into() {
-            let system_resources = self.get_system_resource_map(system_id).ok_or(anyhow::Error::msg("Missing System Resources"))?;
+            // Safety:
+            // doesnt take resources
+            let system_resources = unsafe { self.get_system_resource_map(system_id).ok_or(anyhow::Error::msg("Missing System Resources"))? };
             system_resources.conservatively_merge(resource_map)
         } else {
             self.resources.read().conservatively_merge(resource_map)
@@ -299,7 +306,9 @@ impl Scheduler {
 
     pub fn conservatively_insert<T: 'static>(&mut self, type_id: TypeId, resource: T, system: Option<&Id>) -> anyhow::Result<()> {
         if let Some(system_id) = system {
-            let system_resources = self.get_system_resource_map(system_id).ok_or(anyhow::Error::msg("Missing System Resources"))?;
+            // Safety:
+            // Doesnt take resources
+            let system_resources = unsafe { self.get_system_resource_map(system_id).ok_or(anyhow::Error::msg("Missing System Resources")) }?;
             system_resources.conservatively_insert(type_id, resource)
         } else {
             self.resources.read().conservatively_insert(type_id, resource)
@@ -374,8 +383,6 @@ impl Scheduler {
             let (execution_graphs, running_systems, bubbles) = {
                 let resource_guard = self.resources.read();
 
-                //self.bubbles.retain_mut(|(lifetime, _, _)| lifetime.tick());
-
                 if !self.bubble_echoes.is_empty() {
                     todo!()
                 }
@@ -441,8 +448,9 @@ impl Scheduler {
     
                 let running_systems = to_execute.iter().map(|(system_id, _)| system_id.clone()).collect::<HashSet<_>>();
 
-                let bubbles = self.bubbles.iter().filter_map(|(_, bubble_name, crit)| {
-                    if crit(&current_events.events()) {
+                let bubbles = self.bubbles.iter_mut().filter_map(|(ticker, bubble_name, crit)| {
+                    if crit(&current_events.events()) || ticker.age.0 > 0 {
+                        ticker.tick_wrap();
                         Some(Id::from(bubble_name.as_str()))
                     } else {
                         None

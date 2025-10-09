@@ -23,6 +23,12 @@ impl AccessMap {
             }
         })
     }
+    
+    pub fn merge(&mut self, other: impl Iterator<Item = (TypeId, Access)>) {
+        for (id, access) in other {
+            self.accesses.insert(id, access);
+        }
+    }
 }
 
 impl<const N: usize> From<[(TypeId, Access); N]> for AccessMap {

@@ -6,13 +6,15 @@ use crate::{id::Id, parameters::InjectionParam, scheduler::{accesses::access_map
 pub struct AccessCheckedResourceMap<'a> {
     resource_map: parking_lot::lock_api::RwLockReadGuard<'a, parking_lot::RawRwLock, ResourceMap>,
     accesses: &'a Arc<tokio::sync::RwLock<HashMap<Id, AccessMap>>>,
+    id: Id
 }
 
 impl<'a> AccessCheckedResourceMap<'a> {
-    pub fn new(resource_map: &'a Arc<parking_lot::RwLock<ResourceMap>>, accesses: &'a Arc<tokio::sync::RwLock<HashMap<Id, AccessMap>>>) -> Self {
+    pub fn new(resource_map: &'a Arc<parking_lot::RwLock<ResourceMap>>, accesses: &'a Arc<tokio::sync::RwLock<HashMap<Id, AccessMap>>>, id: Id) -> Self {
         Self {
             resource_map: resource_map.read(),
-            accesses
+            accesses,
+            id
         }
     }
 
@@ -23,11 +25,18 @@ impl<'a> AccessCheckedResourceMap<'a> {
         if !self.accesses.blocking_read().iter().any(|(_, access_map)| {
             accesses.conflicts(access_map)
         }) {
+            self.accesses.blocking_write().entry(self.id.clone()).or_insert(AccessMap::new()).merge(accesses.accesses.into_iter());
             // Safety:
             // Accesses are checked
             return Ok(unsafe {self.resource_map.resolve::<T>() });
         }
 
         Err("Access Denied")
+    }
+}
+
+impl Drop for AccessCheckedResourceMap<'_> {
+    fn drop(&mut self) {
+        self.accesses.blocking_write().remove(&self.id);
     }
 }

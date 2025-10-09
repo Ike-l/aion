@@ -34,4 +34,17 @@ impl Lifetime {
             return true
         }
     }
+
+    /// bool: true: wrapped lifetime, false: ticked as usual
+    pub fn tick_wrap(&mut self) -> bool {
+        self.age.0 += 1;
+        if let Some(expected_age) = &self.expected_age {
+            let new_age = self.age.0.wrapping_rem(expected_age.0);
+            if self.age.0 > new_age {
+                self.age.0 = new_age;
+                return true;
+            }
+        }
+        false
+    }
 }
