@@ -1,3 +1,7 @@
 [submodule "aion-reactor"]
 	path = aion-reactor
 	url = git@github.com:Ike-l/aion-reactor.git
+
+[submodule "aion-utilities"]
+	path = aion-utilities
+	url = git@github.com:Ike-l/aion-utilities.git
