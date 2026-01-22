@@ -13,3 +13,6 @@
 [submodule "aion-event"]
 	path = aion-event
 	url = git@github.com:Ike-l/aion-event.git
+[submodule "aion-processor"]
+	path = aion-processor
+	url = git@github.com:Ike-l/aion-processor.git
