@@ -16,3 +16,6 @@
 [submodule "aion-processor"]
 	path = aion-processor
 	url = git@github.com:Ike-l/aion-processor.git
+[submodule "aion-program"]
+	path = aion-program
+	url = git@github.com:Ike-l/aion-program.git
