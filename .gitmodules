@@ -5,3 +5,7 @@
 [submodule "aion-utilities"]
 	path = aion-utilities
 	url = git@github.com:Ike-l/aion-utilities.git
+
+[submodule "aion-state"]
+	path = aion-state
+	url = git@github.com:Ike-l/aion-state.git
