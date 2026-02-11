@@ -19,3 +19,6 @@
 [submodule "aion-program"]
 	path = aion-program
 	url = git@github.com:Ike-l/aion-program.git
+[submodule "execution_graph"]
+	path = execution_graph
+	url = https://github.com/Ike-l/execution_graph.git
