@@ -22,3 +22,6 @@
 [submodule "execution_graph"]
 	path = execution_graph
 	url = git@github.com:Ike-l/execution_graph.git
+[submodule "aion-system"]
+	path = aion-system
+	url = https://github.com/Ike-l/aion-system.git
