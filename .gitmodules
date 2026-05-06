@@ -28,9 +28,6 @@
 [submodule "aion-event-systems/aion-event-mapper"]
 	path = aion-event-systems/aion-event-mapper
 	url = git@github.com:Ike-l/aion-event-mapper.git
-[submodule "aion-event-systems/aion-event-chain"]
-	path = aion-event-systems/aion-event-chain
-	url = git@github.com:Ike-l/aion-event-chain.git
 [submodule "aion-event-systems/aion-event-clock"]
 	path = aion-event-systems/aion-event-clock
 	url = git@github.com:Ike-l/aion-event-clock.git
