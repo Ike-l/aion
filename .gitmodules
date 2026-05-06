@@ -40,6 +40,3 @@
 [submodule "aion-event-systems/aion-event-executable"]
 	path = aion-event-systems/aion-event-executable
 	url = git@github.com:Ike-l/aion-event-executable.git
-[submodule "aion-event-systems/aion-event-temporal"]
-	path = aion-event-systems/aion-event-temporal
-	url = git@github.com:Ike-l/aion-event-temporal.git
