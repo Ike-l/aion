@@ -25,3 +25,24 @@
 [submodule "aion-system"]
 	path = aion-system
 	url = https://github.com/Ike-l/aion-system.git
+[submodule "aion-event-systems/aion-event-mapper"]
+	path = aion-event-systems/aion-event-mapper
+	url = git@github.com:Ike-l/aion-event-mapper.git
+[submodule "aion-event-systems/aion-event-chain"]
+	path = aion-event-systems/aion-event-chain
+	url = git@github.com:Ike-l/aion-event-chain.git
+[submodule "aion-event-systems/aion-event-clock"]
+	path = aion-event-systems/aion-event-clock
+	url = git@github.com:Ike-l/aion-event-clock.git
+[submodule "aion-event-conditional/aion-event-conditional"]
+	path = aion-event-conditional/aion-event-conditional
+	url = git@github.com:Ike-l/aion-event-clock.git
+[submodule "aion-event-systems/aion-event-conditional"]
+	path = aion-event-systems/aion-event-conditional
+	url = git@github.com:Ike-l/aion-event-conditional.git
+[submodule "aion-event-systems/aion-event-executable"]
+	path = aion-event-systems/aion-event-executable
+	url = git@github.com:Ike-l/aion-event-executable.git
+[submodule "aion-event-systems/aion-event-temporal"]
+	path = aion-event-systems/aion-event-temporal
+	url = git@github.com:Ike-l/aion-event-temporal.git
