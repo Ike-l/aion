@@ -39,3 +39,6 @@
 [submodule "aion-event-systems/aion-event-processor"]
 	path = aion-event-systems/aion-event-processor
 	url = git@github.com:Ike-l/aion-event-processor.git
+[submodule "aion-ecs"]
+	path = aion-ecs
+	url = git@github.com:Ike-l/aion-ecs.git
