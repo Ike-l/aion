@@ -31,12 +31,7 @@ version = "0.1.0"
 name = "aion-ecs"
 version = "0.1.0"
 dependencies = [
- "aion-program",
  "aion-state",
- "anyhow",
- "hecs 0.11.1",
- "parking_lot",
- "tokio",
 ]
 
 [[package]]
