@@ -29,6 +29,8 @@ aion-state = { path = "aion-state", features = ["sync", "releaser", "notifier", 
 rand = "0.10.3"
 rand_chacha = "0.10.0"
 
+serde = { version = "1.0.229", features = ["derive"] }
+
 [workspace.lints.clippy]
 pedantic = { level = "deny", priority = -1 }
 nursery = { level = "deny", priority = -1 }
