@@ -4,3 +4,23 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+
+[workspace]
+members = [
+    ".",
+    "aion-ecs",
+    "aion-event",
+    "aion-event-systems/aion-event-clock",
+    "aion-event-systems/aion-event-conditional",
+    "aion-event-systems/aion-event-executable",
+    "aion-event-systems/aion-event-mapper",
+    "aion-event-systems/aion-event-processor",
+    "aion-processor",
+    "aion-program",
+    "aion-reactor",
+    "aion-state",
+    "aion-system",
+    "execution_graph",
+]
+
+[workspace.dependencies]
