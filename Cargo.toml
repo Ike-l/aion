@@ -26,6 +26,9 @@ members = [
 [workspace.dependencies]
 aion-state = { path = "aion-state", features = ["sync", "releaser", "notifier", "async"] }
 
+rand = "0.10.3"
+rand_chacha = "0.10.0"
+
 [workspace.lints.clippy]
 pedantic = { level = "deny", priority = -1 }
 nursery = { level = "deny", priority = -1 }
