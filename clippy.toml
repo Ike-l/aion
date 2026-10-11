@@ -3,6 +3,12 @@ disallowed-types = [
     # { path = "std::sync::Mutex", reason = "Use crate::prelude::sync::Mutex instead." },
     # { path = "std::sync::Arc", reason = "Use crate::prelude::sync::Arc instead." },
 ]
+
+disallowed-methods = [
+    { path = "core::result::Result::ok", reason = "Silently drops the error. Use '.log_ok()' from `aion_com` instead." },
+    { path = "std::result::Result::ok", reason = "Silently drops the error. Use '.log_ok()' from `aion_com` instead." }
+]
+
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true
